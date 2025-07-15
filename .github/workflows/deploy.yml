@@ -1,4 +1,4 @@
-name: CI & PR Labeling
+name: CI
 
 on:
   push:
@@ -34,19 +34,3 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt found."; fi
-
-  label-pr:
-    name: Auto Label Pull Request
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Labeler
-        uses: actions/labeler@v5
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          configuration-path: .github/labeler.yml
-          sync-labels: false
