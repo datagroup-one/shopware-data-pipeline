@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt found."; fi
 
   label-pr:
     name: Auto Label Pull Request
@@ -41,7 +41,12 @@ jobs:
     if: github.event_name == 'pull_request'
 
     steps:
-      - name: Run labeler
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Labeler
         uses: actions/labeler@v5
         with:
-          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          sync-labels: false
