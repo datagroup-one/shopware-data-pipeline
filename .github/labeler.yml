@@ -1,14 +1,20 @@
 feature:
-  - feature/**
+  - 'feature/**'
+
 fix:
-  - fix/**
+  - 'fix/**'
+
 chore:
-  - chore/**
+  - 'chore/**'
+
 docs:
-  - docs/**
+  - 'docs/**'
+
 refactor:
-  - refactor/**
+  - 'refactor/**'
+
 hotfix:
-  - hotfix/**
+  - 'hotfix/**'
+
 test:
-  - test/**
+  - 'test/**'
