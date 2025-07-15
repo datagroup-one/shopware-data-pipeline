@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from urllib.parse import unquote_plus
 
-# Initialize
+# Initialized
 s3 = boto3.client("s3")
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
