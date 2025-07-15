@@ -1,0 +1,22 @@
+# .github/labeler.yml
+
+feature/**:
+  - feature
+
+fix/**:
+  - bug
+
+chore/**:
+  - maintenance
+
+docs/**:
+  - documentation
+
+refactor/**:
+  - refactor
+
+hotfix/**:
+  - critical
+
+test/**:
+  - test
