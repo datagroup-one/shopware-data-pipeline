@@ -39,6 +39,7 @@ def validate_row(row):
             return False, "Invalid discount_applied"
     return True, None
 
+
 def lambda_handler(event, context):
     for record in event['Records']:
         try:
