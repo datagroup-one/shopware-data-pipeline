@@ -3,7 +3,7 @@ import base64
 import pytest
 from datetime import datetime
 
-from web_traffic_transformation_fn import (
+from pipelines.web_traffic.lambda_fn.web_traffic_transformation_fn import (
     transform_web_traffic_record,
     build_success_response,
     build_failure_response,
@@ -12,6 +12,7 @@ from web_traffic_transformation_fn import (
     derive_page_fields,
     derive_timestamp_fields
 )
+
 
 # ------------------------
 # Fixtures
