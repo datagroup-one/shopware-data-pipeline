@@ -1,5 +1,6 @@
 import pytest
-from pipelines.crm_interaction.lambda_fn.crm_transform import transform_crm_record
+from pipelines.crm_interaction.lambda_fn.crm_transformation_fn import transform_crm_record
+
 
 def test_transform_crm_record_valid():
     input_record = {
@@ -17,3 +18,6 @@ def test_transform_crm_record_valid():
     assert result["interaction_type"] == "chat"
     assert result["rating"] == 5
     assert result["has_rating"] is True
+    assert result["has_message"] is True
+    assert result["has_channel"] is True
+    assert result["interaction_hour"] >= 0 and result["interaction_hour"] <= 23
