@@ -31,7 +31,7 @@ def valid_event():
     }
 
 # ------------------------
-# Transform tests
+# Transform Tests
 # ------------------------
 
 def test_transform_valid_event(valid_event):
@@ -44,12 +44,12 @@ def test_transform_valid_event(valid_event):
     assert result["browser"] == "safari"
     assert result["event_type"] == "click"
     assert "event_date" in result
+    assert "processed_at" in result
     assert result["is_mobile"] is True
     assert result["is_engagement_event"] is True
-    assert "processed_at" in result
 
 
-def test_missing_required_field():
+def test_transform_missing_required_field():
     incomplete = {
         "page": "/home",
         "timestamp": str(datetime.now().timestamp())
@@ -59,7 +59,7 @@ def test_missing_required_field():
         transform_web_traffic_record(incomplete)
 
 
-def test_invalid_timestamp():
+def test_transform_invalid_timestamp():
     bad_ts = {
         "session_id": "abc",
         "page": "/home",
@@ -70,7 +70,7 @@ def test_invalid_timestamp():
         transform_web_traffic_record(bad_ts)
 
 # ------------------------
-# Device type logic
+# Device Type Detection
 # ------------------------
 
 @pytest.mark.parametrize("device_type,expected", [
@@ -84,12 +84,13 @@ def test_is_mobile_device(device_type, expected):
     assert is_mobile_device(device_type) == expected
 
 # ------------------------
-# Engagement detection
+# Engagement Type Detection
 # ------------------------
 
 @pytest.mark.parametrize("event_type,expected", [
     ("click", True),
     ("scroll", True),
+    ("form_submit", True),
     ("logout", False),
     ("", False),
     (None, False),
@@ -98,7 +99,7 @@ def test_is_engagement_event(event_type, expected):
     assert is_engagement_event(event_type) == expected
 
 # ------------------------
-# Page parsing logic
+# Page Field Extraction
 # ------------------------
 
 def test_derive_page_fields_with_query():
@@ -111,14 +112,32 @@ def test_derive_page_fields_with_query():
     assert result["has_query_params"] is True
 
 
-def test_derive_page_fields_invalid_url():
-    # Should fallback to safe defaults
-    result = derive_page_fields("invalid_url_with_no_slashes")
+def test_derive_page_fields_with_unmapped_path():
+    page = "/something/unexpected"
+    result = derive_page_fields(page)
+
+    assert result["page_category"] == "other"
+    assert result["page_path"] == "/something/unexpected"
+    assert result["path_depth"] == 2
+    assert result["has_query_params"] is False
+
+
+def test_derive_page_fields_with_root_path():
+    result = derive_page_fields("/")
+    assert result["page_category"] == "home"
+    assert result["page_path"] == "/"
+    assert result["path_depth"] == 0
+    assert result["has_query_params"] is False
+
+
+def test_derive_page_fields_with_malformed_input():
+    result = derive_page_fields("%%%not/a/valid?url")
     assert result["page_category"] == "other"
     assert "page_path" in result
+    assert result["path_depth"] >= 0
 
 # ------------------------
-# Timestamp logic
+# Timestamp Field Extraction
 # ------------------------
 
 def test_derive_timestamp_fields():
@@ -130,12 +149,16 @@ def test_derive_timestamp_fields():
     assert fields["event_date"] == "2024-05-10"
     assert fields["event_hour"] == 14
     assert fields["event_day_of_week"] == 4  # Friday
+    assert fields["year"] == 2024
+    assert fields["month"] == 5
+    assert fields["day"] == 10
+    assert fields["hour"] == 14
 
 # ------------------------
-# Firehose response
+# Firehose Response Handling
 # ------------------------
 
-def test_success_response():
+def test_build_success_response_encodes_data():
     payload = {"foo": "bar"}
     record = build_success_response("xyz", payload)
 
@@ -146,7 +169,7 @@ def test_success_response():
     assert decoded["foo"] == "bar"
 
 
-def test_failure_response():
+def test_build_failure_response_structure():
     record = build_failure_response("abc")
     assert record == {
         "recordId": "abc",
