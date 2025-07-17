@@ -1,0 +1,13 @@
+{
+  "region": "eu-west-1",
+  "environments": {
+    "dev": {
+      "cluster": "data-pipeline-cluster-dev",
+      "bucket": "data-pipeline-dev-605134436600",
+      "streams": {
+        "crm": "PUT-S3-SrBTP",
+        "web": "web_traffic_logs"
+      }
+    }
+  }
+}
