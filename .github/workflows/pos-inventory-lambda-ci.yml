@@ -26,12 +26,15 @@ jobs:
       - name: Lint POS Lambda Code (basic flake8 check)
         run: |
           pip install flake8
-          flake8 pipelines/POS/lambda_fn/pos-validation-fn.py --max-line-length=120 --ignore=E203,W503
+          flake8 pipelines/pos/lambda_fn/pos-validation-fn.py --max-line-length=120 --ignore=E203,W503
+          flake8 pipelines/inventory/lambda_fn/inventory-validation-fn.py --max-line-length=120 --ignore=E203,W503
 
       - name: Syntax Check
         run: |
-          python -m py_compile pipelines/pos/lambda_fn/pos-validation-fn.py
+          set -e
+          python -m py_compile pipelines/POS/lambda_fn/pos-validation-fn.py
           python -m py_compile pipelines/inventory/lambda_fn/inventory-validation-fn.py
+
 
       # OPTIONAL: Add unit tests here if needed
       # - name: Run Unit Tests
