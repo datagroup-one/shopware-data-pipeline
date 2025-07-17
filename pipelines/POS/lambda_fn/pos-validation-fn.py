@@ -24,6 +24,7 @@ OPTIONAL_FIELDS = {
 
 EXPECTED_HEADERS = list(REQUIRED_FIELDS.keys()) + list(OPTIONAL_FIELDS.keys())
 
+
 def validate_row(row):
     for field, cast_type in REQUIRED_FIELDS.items():
         if not row.get(field):
@@ -87,6 +88,7 @@ def lambda_handler(event, context):
         except Exception as e:
             logger.error(f"Unexpected error while processing file {key}: {str(e)}", exc_info=True)
 
+
 def extract_date_folder(filename):
     match = re.search(r'pos_(\d{8})_', filename)
     if match:
@@ -96,6 +98,7 @@ def extract_date_folder(filename):
     else:
         logger.warning("Could not parse date from filename, defaulting to unknown/")
         return "unknown"
+
 
 def write_csv_to_s3(rows, headers, bucket, target_key, retries=3):
     for attempt in range(retries):
@@ -111,6 +114,7 @@ def write_csv_to_s3(rows, headers, bucket, target_key, retries=3):
             logger.error(f"Failed to upload {target_key} (attempt {attempt+1}): {str(e)}")
             if attempt == retries - 1:
                 raise
+
 
 def move_to_rejected(bucket, filename, content, reason):
     date_folder = extract_date_folder(filename)
