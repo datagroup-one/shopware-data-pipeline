@@ -1,4 +1,4 @@
-name: POS Lambda CI
+name: POS and Inventory Lambda CI
 
 on:
   push:
