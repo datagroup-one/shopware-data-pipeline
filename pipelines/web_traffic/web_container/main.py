@@ -4,10 +4,13 @@ import time
 import logging
 import requests
 import boto3
+import gzip
 from datetime import datetime
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from io import BytesIO
+import random
 
 # Configure logging
 logging.basicConfig(
@@ -26,7 +29,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                 'status': 'healthy',
                 'service': 'web-producer',
                 'timestamp': datetime.utcnow().isoformat(),
-                'version': '1.0'
+                'version': '2.0'
             }
             self.wfile.write(json.dumps(response).encode())
             logger.info("Health check requested - returning healthy status")
@@ -40,12 +43,24 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 class WebProducer:
+    # Expected fields for data validation
+    EXPECTED_FIELDS = {"session_id", "page", "timestamp"}
+    
     def __init__(self):
         self.api_url = os.getenv('API_URL', 'http://3.248.199.26:8000/api/web-traffic/')
         self.stream_name = os.getenv('FIREHOSE_STREAM_NAME', 'web_traffic_logs')
         self.s3_bucket = os.getenv('S3_BUCKET_NAME', 'data-pipeline-dev-605134436600')
         self.poll_interval = int(os.getenv('POLL_INTERVAL', '30'))
         self.region = os.getenv('AWS_DEFAULT_REGION', 'eu-west-1')
+        
+        # S3 batching configuration
+        self.s3_batch_buffer = []
+        self.batch_size = int(os.getenv('S3_BATCH_SIZE', '10'))
+        self.batch_timeout = int(os.getenv('S3_BATCH_TIMEOUT', '300'))  # 5 minutes
+        self.last_s3_write = time.time()
+        
+        # Empty poll tracking
+        self.empty_poll_counter = 0
         
         # Initialize AWS clients
         try:
@@ -63,6 +78,7 @@ class WebProducer:
             raise
         
         logger.info(f"Web Producer initialized - Stream: {self.stream_name}, S3 Bucket: {self.s3_bucket}, API: {self.api_url}")
+        logger.info(f"S3 batching enabled: {self.batch_size} records or {self.batch_timeout}s timeout")
 
     def start_health_server(self):
         """Start health check server on port 8080"""
@@ -88,173 +104,352 @@ class WebProducer:
             logger.error(f"Failed to start health server: {e}")
             raise
 
-    def fetch_data(self) -> Optional[List[Dict]]:
-        """Fetch data from Web Traffic API"""
-        try:
-            logger.info(f"Polling Web API: {self.api_url}")
-            response = requests.get(self.api_url, timeout=30)
-            response.raise_for_status()
-            
-            # Parse JSON response
-            json_response = response.json()
-            
-            # Check if API returned an error
-            if isinstance(json_response, dict) and 'error' in json_response:
-                logger.warning(f"API returned error: {json_response['error']}")
-                return None
-            
-            # Handle different response formats
-            if isinstance(json_response, list):
-                # Response is already a list
-                data = json_response
-            elif isinstance(json_response, dict):
-                # Single record response - wrap in list
-                data = [json_response]
-            else:
-                logger.error(f"Unexpected response format: {type(json_response)}")
-                return None
-            
-            logger.info(f"Successfully fetched {len(data)} records from Web API")
-            
-            # Log sample record for debugging
-            if data and len(data) > 0:
-                logger.info(f"Sample record: {data[0]}")
-            
-            return data
-            
-        except requests.RequestException as e:
-            logger.error(f"API request failed: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
-            logger.error(f"Response content: {response.text[:200]}...")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error fetching data: {e}")
-            return None
+    def exponential_backoff(self, attempt: int, max_delay: int = 60) -> float:
+        """Calculate exponential backoff delay"""
+        base_delay = 2 ** attempt
+        jitter = random.uniform(0.1, 0.5)
+        delay = min(base_delay + jitter, max_delay)
+        return delay
 
-    def send_to_s3(self, records: List[Dict]) -> bool:
-        """Send raw records directly to S3 with no enrichment"""
-        try:
-            if not records:
-                logger.info("No records to send to S3")
-                return True
+    def fetch_data_with_retry(self, max_retries: int = 3) -> Optional[List[Dict]]:
+        """Fetch data from Web Traffic API with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Polling Web API: {self.api_url} (attempt {attempt + 1}/{max_retries})")
+                response = requests.get(self.api_url, timeout=30)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                json_response = response.json()
+                
+                # Check if API returned an error
+                if isinstance(json_response, dict) and 'error' in json_response:
+                    logger.warning(f"API returned error: {json_response['error']}")
+                    return None
+                
+                # Handle different response formats
+                if isinstance(json_response, list):
+                    data = json_response
+                elif isinstance(json_response, dict):
+                    data = [json_response]
+                else:
+                    logger.error(f"Unexpected response format: {type(json_response)}")
+                    return None
+                
+                logger.info(f"Successfully fetched {len(data)} records from Web API")
+                
+                # Log sample record for debugging
+                if data and len(data) > 0:
+                    logger.info(f"Sample record: {data[0]}")
+                
+                return data
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    backoff_delay = self.exponential_backoff(attempt)
+                    logger.info(f"Retrying in {backoff_delay:.2f} seconds...")
+                    time.sleep(backoff_delay)
+                else:
+                    logger.error("Max retries exceeded for API request")
+                    return None
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"Unexpected error fetching data: {e}")
+                return None
+        
+        return None
+
+    def is_valid_record(self, record: Dict) -> bool:
+        """Validate record against expected schema"""
+        return self.EXPECTED_FIELDS.issubset(record.keys())
+
+    def validate_records(self, records: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+        """Separate valid and invalid records"""
+        valid_records = []
+        invalid_records = []
+        
+        for record in records:
+            if self.is_valid_record(record):
+                valid_records.append(record)
+            else:
+                invalid_records.append(record)
+                logger.warning(f"Invalid record (missing required fields): {record}")
+        
+        logger.info(f"Validation results: {len(valid_records)} valid, {len(invalid_records)} invalid")
+        return valid_records, invalid_records
+
+    def send_to_dlq(self, records: List[Dict], reason: str = "validation_failed") -> bool:
+        """Send invalid/failed records to Dead Letter Queue in S3"""
+        if not records:
+            return True
             
+        try:
+            current_date = datetime.utcnow().strftime('%Y-%m-%d')
+            timestamp = int(time.time() * 1000)
+            dlq_key = f"dlq/web/{reason}/{current_date}/dlq_{timestamp}.json"
+            
+            # Prepare DLQ data with metadata
+            dlq_data = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "reason": reason,
+                "service": "web-producer",
+                "failed_records": records
+            }
+            
+            data_content = json.dumps(dlq_data, indent=2)
+            
+            # Compress DLQ data
+            compressed_buffer = BytesIO()
+            with gzip.GzipFile(mode='w', fileobj=compressed_buffer) as gz:
+                gz.write(data_content.encode())
+            
+            self.s3.put_object(
+                Bucket=self.s3_bucket,
+                Key=dlq_key + '.gz',
+                Body=compressed_buffer.getvalue(),
+                ContentEncoding='gzip',
+                ContentType='application/json'
+            )
+            
+            logger.info(f"Sent {len(records)} records to DLQ: s3://{self.s3_bucket}/{dlq_key}.gz")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send records to DLQ: {e}")
+            return False
+
+    def add_to_s3_batch(self, records: List[Dict]) -> bool:
+        """Add records to S3 batch buffer"""
+        try:
+            self.s3_batch_buffer.extend(records)
+            logger.debug(f"Added {len(records)} records to S3 batch buffer (total: {len(self.s3_batch_buffer)})")
+            
+            # Check if we should flush the batch
+            should_flush = (
+                len(self.s3_batch_buffer) >= self.batch_size or
+                time.time() - self.last_s3_write >= self.batch_timeout
+            )
+            
+            if should_flush:
+                return self.flush_s3_batch()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to add records to S3 batch: {e}")
+            return False
+
+    def flush_s3_batch(self) -> bool:
+        """Flush S3 batch buffer to S3"""
+        if not self.s3_batch_buffer:
+            return True
+            
+        try:
             # Create S3 key with date partitioning
             current_date = datetime.utcnow().strftime('%Y-%m-%d')
             timestamp = int(time.time() * 1000)
             s3_key = f"direct/web/{current_date}/batch_{timestamp}.json"
             
-            # Send raw API data without any enrichment
-            data_content = '\n'.join([json.dumps(record) for record in records])
+            # Prepare batch data
+            data_content = '\n'.join([json.dumps(record) for record in self.s3_batch_buffer])
             
-            logger.info(f"Sending {len(records)} raw records to S3: s3://{self.s3_bucket}/{s3_key}")
+            # Compress data using GZIP
+            compressed_buffer = BytesIO()
+            with gzip.GzipFile(mode='w', fileobj=compressed_buffer) as gz:
+                gz.write(data_content.encode())
             
-            # Upload to S3
+            logger.info(f"Flushing S3 batch: {len(self.s3_batch_buffer)} records to s3://{self.s3_bucket}/{s3_key}.gz")
+            
+            # Upload compressed data to S3
             self.s3.put_object(
                 Bucket=self.s3_bucket,
-                Key=s3_key,
-                Body=data_content,
+                Key=s3_key + '.gz',
+                Body=compressed_buffer.getvalue(),
+                ContentEncoding='gzip',
                 ContentType='application/json'
             )
             
-            logger.info(f"Successfully sent {len(records)} raw records to S3")
+            logger.info(f"Successfully flushed {len(self.s3_batch_buffer)} records to S3 (compressed)")
+            
+            # Clear batch buffer and update timestamp
+            self.s3_batch_buffer.clear()
+            self.last_s3_write = time.time()
+            
             return True
             
         except Exception as e:
-            logger.error(f"S3 send failed: {e}")
+            logger.error(f"S3 batch flush failed: {e}")
             return False
 
-    def send_to_firehose(self, records: List[Dict]) -> bool:
-        """Send raw records to Kinesis Firehose with no enrichment"""
-        try:
-            if not records:
-                logger.info("No records to send to Firehose")
-                return True
-            
-            # Create Firehose records with raw API data (no enrichment)
-            firehose_records = []
-            for record in records:
-                try:
-                    # Skip error records
-                    if isinstance(record, dict) and 'error' in record:
-                        logger.debug(f"Skipping error record: {record}")
+    def send_to_firehose_with_retry(self, records: List[Dict], max_retries: int = 3) -> bool:
+        """Send records to Kinesis Firehose with retry logic"""
+        if not records:
+            logger.info("No records to send to Firehose")
+            return True
+        
+        for attempt in range(max_retries):
+            try:
+                # Create Firehose records
+                firehose_records = []
+                for record in records:
+                    try:
+                        firehose_record = {
+                            'Data': json.dumps(record) + '\n'
+                        }
+                        firehose_records.append(firehose_record)
+                    except Exception as e:
+                        logger.error(f"Error preparing record for Firehose: {e}")
                         continue
+                
+                if not firehose_records:
+                    logger.info("No valid records to send to Firehose after preparation")
+                    return True
+                
+                logger.info(f"Sending {len(firehose_records)} records to Firehose stream: {self.stream_name} (attempt {attempt + 1}/{max_retries})")
+                
+                response = self.firehose.put_record_batch(
+                    DeliveryStreamName=self.stream_name,
+                    Records=firehose_records
+                )
+                
+                failed_count = response.get('FailedPutCount', 0)
+                if failed_count > 0:
+                    logger.warning(f"Failed to send {failed_count} records to Firehose")
                     
-                    # Send raw record without any enrichment
-                    firehose_record = {
-                        'Data': json.dumps(record) + '\n'
-                    }
-                    firehose_records.append(firehose_record)
-                except Exception as e:
-                    logger.error(f"Error preparing record for Firehose: {e}")
-                    continue
-            
-            if not firehose_records:
-                logger.info("No valid records to send to Firehose after filtering")
+                    # Extract failed records for DLQ
+                    failed_records = []
+                    for i, record_result in enumerate(response.get('RequestResponses', [])):
+                        if 'ErrorCode' in record_result:
+                            logger.error(f"Record {i} failed: {record_result}")
+                            if i < len(records):
+                                failed_records.append(records[i])
+                    
+                    # Send failed records to DLQ
+                    if failed_records:
+                        self.send_to_dlq(failed_records, "firehose_failed")
+                    
+                    return False
+                
+                logger.info(f"Successfully sent {len(firehose_records)} records to Firehose")
                 return True
-            
-            logger.info(f"Sending {len(firehose_records)} raw records to Firehose stream: {self.stream_name}")
-            
-            response = self.firehose.put_record_batch(
-                DeliveryStreamName=self.stream_name,
-                Records=firehose_records
-            )
-            
-            failed_count = response.get('FailedPutCount', 0)
-            if failed_count > 0:
-                logger.warning(f"Failed to send {failed_count} records to Firehose")
-                # Log details of failed records
-                for i, record_result in enumerate(response.get('RequestResponses', [])):
-                    if 'ErrorCode' in record_result:
-                        logger.error(f"Record {i} failed: {record_result}")
-                return False
-            
-            logger.info(f"Successfully sent {len(firehose_records)} raw records to Firehose")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Firehose send failed: {e}")
-            return False
+                
+            except Exception as e:
+                logger.error(f"Firehose send failed (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    backoff_delay = self.exponential_backoff(attempt)
+                    logger.info(f"Retrying Firehose send in {backoff_delay:.2f} seconds...")
+                    time.sleep(backoff_delay)
+                else:
+                    logger.error("Max retries exceeded for Firehose send")
+                    # Send to DLQ as final fallback
+                    self.send_to_dlq(records, "firehose_max_retries_exceeded")
+                    return False
+        
+        return False
 
-    def send_to_both_destinations(self, records: List[Dict]) -> tuple:
-        """Send raw data to both S3 and Firehose simultaneously"""
-        s3_success = self.send_to_s3(records)
-        firehose_success = self.send_to_firehose(records)
+    def send_to_both_destinations(self, records: List[Dict]) -> Tuple[bool, bool]:
+        """Send data to both S3 (batched) and Firehose (immediate)"""
+        # Firehose: Send immediately for real-time processing
+        firehose_success = self.send_to_firehose_with_retry(records)
+        
+        # S3: Add to batch buffer for cost optimization
+        s3_success = self.add_to_s3_batch(records)
         
         return s3_success, firehose_success
 
-    def run_cycle(self):
-        """Run one polling cycle with dual streaming of raw data"""
+    def alert_no_data(self):
+        """Alert when no data has been received for extended period"""
+        logger.error("⚠️ ALERT: No data received in the last 10 polling cycles!")
+        # Optional: Add SNS notification, CloudWatch metric, or Slack webhook here
+        
+        # Example CloudWatch metric (optional)
         try:
-            data = self.fetch_data()
+            cloudwatch = boto3.client('cloudwatch', region_name=self.region)
+            cloudwatch.put_metric_data(
+                Namespace='DataPipeline/WebProducer',
+                MetricData=[
+                    {
+                        'MetricName': 'NoDataAlert',
+                        'Value': 1,
+                        'Unit': 'Count',
+                        'Timestamp': datetime.utcnow()
+                    }
+                ]
+            )
+            logger.info("Published no-data alert metric to CloudWatch")
+        except Exception as e:
+            logger.error(f"Failed to publish CloudWatch metric: {e}")
+
+    def run_cycle(self):
+        """Run one polling cycle with enhanced features"""
+        try:
+            # Fetch data with retry logic
+            data = self.fetch_data_with_retry()
+            
             if data:
-                logger.info(f"Sending {len(data)} raw records to both S3 and Firehose")
+                # RESET COUNTER: Data arrived, reset empty poll tracking
+                self.empty_poll_counter = 0
                 
-                # Send raw data to both destinations
-                s3_success, firehose_success = self.send_to_both_destinations(data)
+                # Validate records
+                valid_records, invalid_records = self.validate_records(data)
                 
-                # Log results
-                if s3_success and firehose_success:
-                    logger.info("✅ Successfully sent raw data to both S3 and Firehose")
-                    logger.info("Polling cycle completed successfully")
-                elif s3_success:
-                    logger.warning("⚠️ S3 succeeded, Firehose failed")
-                    logger.error("Polling cycle partially failed")
-                elif firehose_success:
-                    logger.warning("⚠️ Firehose succeeded, S3 failed")
-                    logger.error("Polling cycle partially failed")
+                # Send invalid records to DLQ
+                if invalid_records:
+                    self.send_to_dlq(invalid_records, "validation_failed")
+                
+                if valid_records:
+                    logger.info(f"Processing {len(valid_records)} valid records")
+                    
+                    # Send to both destinations
+                    s3_success, firehose_success = self.send_to_both_destinations(valid_records)
+                    
+                    # Log results
+                    if s3_success and firehose_success:
+                        logger.info("✅ Successfully processed data to both S3 batch and Firehose")
+                    elif s3_success:
+                        logger.warning("⚠️ S3 batch succeeded, Firehose failed")
+                    elif firehose_success:
+                        logger.warning("⚠️ Firehose succeeded, S3 batch failed")
+                    else:
+                        logger.error("❌ Both S3 batch and Firehose failed")
                 else:
-                    logger.error("❌ Both S3 and Firehose failed")
-                    logger.error("Polling cycle failed completely")
+                    logger.warning("No valid records to process after validation")
+                    
             else:
-                logger.info("No data available in this polling cycle")
+                # INCREMENT COUNTER: No data, track empty poll
+                self.empty_poll_counter += 1
+                logger.info(f"No data available in this polling cycle (empty polls: {self.empty_poll_counter})")
+                
+                # Log context about empty polls
+                if self.empty_poll_counter % 10 == 0:
+                    logger.warning(f"No data received in the last {self.empty_poll_counter * self.poll_interval}s")
+                
+                # Trigger alert after 10 empty polls
+                if self.empty_poll_counter >= 10:
+                    self.alert_no_data()
+                
         except Exception as e:
             logger.error(f"Error in polling cycle: {e}")
 
+    def apply_backoff_logic(self):
+        """Apply intelligent backoff when no data is available"""
+        if self.empty_poll_counter >= 5:
+            backoff_time = min(self.poll_interval * 2, 300)  # Max 5 minutes
+            logger.info(f"Backing off for {backoff_time}s due to {self.empty_poll_counter} consecutive empty polls")
+            time.sleep(backoff_time)
+
     def run(self):
-        """Main run loop"""
-        logger.info("Starting Web Producer with dual streaming (S3 + Firehose) - NO DATA ENRICHMENT")
+        """Main run loop with enhanced features"""
+        logger.info("Starting Enhanced Web Producer with:")
+        logger.info("- Dual streaming (S3 batching + Firehose real-time)")
+        logger.info("- Retry logic with exponential backoff")
+        logger.info("- Data validation and DLQ support")
+        logger.info("- Smart polling with adaptive backoff")
+        logger.info("- GZIP compression for cost optimization")
+        logger.info("- NO DATA ENRICHMENT")
         
         try:
             health_server = self.start_health_server()
@@ -266,18 +461,34 @@ class WebProducer:
         time.sleep(2)
         
         try:
-            logger.info(f"Starting main polling loop with {self.poll_interval}s interval")
+            logger.info(f"Starting main polling loop with {self.poll_interval}s base interval")
             cycle_count = 0
+            
             while True:
                 cycle_count += 1
                 logger.info(f"Starting polling cycle #{cycle_count}")
+                
+                # Run the polling cycle
                 self.run_cycle()
+                
+                # Apply backoff logic if needed
+                self.apply_backoff_logic()
+                
+                # Flush S3 batch if timeout reached
+                if time.time() - self.last_s3_write >= self.batch_timeout:
+                    self.flush_s3_batch()
+                
                 logger.info(f"Completed polling cycle #{cycle_count}, sleeping for {self.poll_interval}s")
                 time.sleep(self.poll_interval)
+                
         except KeyboardInterrupt:
-            logger.info("Received interrupt signal, shutting down Web Producer")
+            logger.info("Received interrupt signal, flushing final S3 batch...")
+            self.flush_s3_batch()
+            logger.info("Shutting down Enhanced Web Producer")
         except Exception as e:
             logger.error(f"Unexpected error in main loop: {e}")
+            # Flush batch before exiting
+            self.flush_s3_batch()
             raise
 
 if __name__ == "__main__":
@@ -285,5 +496,5 @@ if __name__ == "__main__":
         producer = WebProducer()
         producer.run()
     except Exception as e:
-        logger.error(f"Fatal error starting Web Producer: {e}")
+        logger.error(f"Fatal error starting Enhanced Web Producer: {e}")
         exit(1)
