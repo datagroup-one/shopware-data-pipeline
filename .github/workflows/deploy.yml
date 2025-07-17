@@ -2,11 +2,12 @@ name: Deploy Services
 
 on:
   push:
-    branches: [main]
+    branches: [feature/ecs]
     paths:
-      - 'crm/**'
-      - 'web/**'
+      - 'pipelines/crm_interaction/crm_container/**'
+      - 'pipelines/web_traffic/web_container/**'
       - 'config/**'
+      - 'deploy/**'
   workflow_dispatch:
     inputs:
       service:
