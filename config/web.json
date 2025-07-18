@@ -26,7 +26,7 @@
         },
         {
           "name": "FIREHOSE_STREAM_NAME",
-          "value": "web_traffic_logs"
+          "value": "web_traffic_logs_stream"
         },
         {
           "name": "S3_BUCKET_NAME",
