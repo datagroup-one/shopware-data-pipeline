@@ -36,7 +36,7 @@ jobs:
       run: |
         if [ -d "pipelines/pos/glue_jobs" ] && [ "$(ls -A pipelines/pos/glue_jobs)" ]; then
           echo "Uploading Glue ETL scripts..."
-          aws s3 cp src/glue_jobs/ s3://${{ env.RAW_BUCKET }}/scripts/ --recursive
+          aws s3 cp pipelines/pos/glue_jobs s3://${{ env.RAW_BUCKET }}/scripts/ --recursive
           
           echo "Uploaded Glue scripts:"
           aws s3 ls s3://${{ env.RAW_BUCKET }}/scripts/
