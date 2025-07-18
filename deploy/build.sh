@@ -16,7 +16,7 @@ log_error() {
     echo "$(date '+%H:%M:%S') [ERROR] $1" >&2
 }
 
-# Add service path resolution for new structure
+# Add service path resolution for new structure.
 get_container_path() {
     local service=$1
     case $service in
@@ -137,4 +137,4 @@ fi
 log_info "Building and deploying $SERVICE service for environment: $ENVIRONMENT"
 build_and_push
 deploy_service
-log_info "Deployment completed successfully"
+log_info "Deployment resources completed successfully"

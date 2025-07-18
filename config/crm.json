@@ -1,22 +1,24 @@
 {
-  "family": "crm-task-{environment}",
-  "cpu": "512",
-  "memory": "1024",
+  "family": "crm-task-dev",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "executionRoleArn": "arn:aws:iam::{account}:role/ecs-execution-role-{environment}",
-  "taskRoleArn": "arn:aws:iam::{account}:role/ecs-task-role-{environment}",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::605134436600:role/ecs-execution-role-dev",
+  "taskRoleArn": "arn:aws:iam::605134436600:role/ecs-task-role-dev",
   "containerDefinitions": [
     {
       "name": "crm",
       "image": "{image_uri}",
-      "essential": true,
+      "cpu": 0,
       "portMappings": [
         {
           "containerPort": 8080,
+          "hostPort": 8080,
           "protocol": "tcp"
         }
       ],
+      "essential": true,
       "environment": [
         {
           "name": "API_URL",
@@ -28,7 +30,23 @@
         },
         {
           "name": "S3_BUCKET_NAME",
-          "value": "data-pipeline-{environment}-{account}"
+          "value": "shopware.bucket"
+        },
+        {
+          "name": "S3_PREFIX",
+          "value": "raw-data/crm-interaction-streams/landing-zone/"
+        },
+        {
+          "name": "S3_BATCH_SIZE",
+          "value": "250"
+        },
+        {
+          "name": "S3_BATCH_TIMEOUT",
+          "value": "300"
+        },
+        {
+          "name": "OUTPUT_FORMAT",
+          "value": "parquet"
         },
         {
           "name": "POLL_INTERVAL",
@@ -39,10 +57,12 @@
           "value": "eu-west-1"
         }
       ],
+      "mountPoints": [],
+      "volumesFrom": [],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/crm-{environment}",
+          "awslogs-group": "/ecs/crm-dev",
           "awslogs-region": "eu-west-1",
           "awslogs-stream-prefix": "ecs"
         }
@@ -56,7 +76,8 @@
         "timeout": 10,
         "retries": 3,
         "startPeriod": 180
-      }
+      },
+      "systemControls": []
     }
   ]
 }

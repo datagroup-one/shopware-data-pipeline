@@ -3,10 +3,38 @@
   "environments": {
     "dev": {
       "cluster": "data-pipeline-cluster-dev",
-      "bucket": "data-pipeline-dev-605134436600",
+      "bucket": "shopware.bucket",
       "streams": {
         "crm": "PUT-S3-SrBTP",
         "web": "web_traffic_logs"
+      },
+      "s3_prefixes": {
+        "crm": "raw-data/crm-interaction-streams/landing-zone/",
+        "web": "raw-data/web-logs/landing-zone/"
+      },
+      "batch_config": {
+        "batch_size": "250",
+        "batch_timeout": "300",
+        "output_format": "parquet"
+      },
+      "iam_roles": {
+        "task_role": "arn:aws:iam::605134436600:role/ecs-task-role-dev",
+        "execution_role": "arn:aws:iam::605134436600:role/ecs-execution-role-dev"
+      },
+      "log_groups": {
+        "crm": "/ecs/crm-dev",
+        "web": "/ecs/web-dev"
+      },
+      "resources": {
+        "cpu": "512",
+        "memory": "1024"
+      },
+      "api_endpoints": {
+        "crm": "http://3.248.199.26:8000/api/customer-interaction/",
+        "web": "http://3.248.199.26:8000/api/web-traffic/"
+      },
+      "polling": {
+        "interval": "30"
       }
     }
   }
