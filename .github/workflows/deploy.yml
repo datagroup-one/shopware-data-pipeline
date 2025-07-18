@@ -43,9 +43,11 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
+    - name: Make build script executable
+      run: chmod +x deploy/build.sh
+    
     - name: Deploy ${{ matrix.service }} service
       run: |
-        chmod +x deploy/build.sh
         ./deploy/build.sh ${{ matrix.service }} ${{ env.ENVIRONMENT }}
     
     - name: Verify deployment
