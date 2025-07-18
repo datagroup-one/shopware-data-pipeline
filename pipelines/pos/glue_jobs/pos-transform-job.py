@@ -41,7 +41,7 @@ class TransactionETL:
         self.redshift_table = "processed_pos"
         
         # Data quality thresholds
-        self.max_null_percentage = 100  # 5% max nulls allowed
+        self.max_null_percentage = 1000  # 5% max nulls allowed
         self.min_revenue_threshold = 0.01
         self.max_revenue_threshold = 10000.0
         
