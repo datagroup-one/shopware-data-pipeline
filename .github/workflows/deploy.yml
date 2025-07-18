@@ -25,12 +25,42 @@ env:
   ENVIRONMENT: dev
 
 jobs:
+  # Separate job to determine which services to deploy
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set-matrix.outputs.services }}
+    steps:
+      - name: Determine services to deploy
+        id: set-matrix
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            case "${{ inputs.service }}" in
+              "both")
+                echo 'services=["crm", "web"]' >> $GITHUB_OUTPUT
+                ;;
+              "crm")
+                echo 'services=["crm"]' >> $GITHUB_OUTPUT
+                ;;
+              "web")
+                echo 'services=["web"]' >> $GITHUB_OUTPUT
+                ;;
+              *)
+                echo 'services=["crm", "web"]' >> $GITHUB_OUTPUT
+                ;;
+            esac
+          else
+            # For push events, deploy both services
+            echo 'services=["crm", "web"]' >> $GITHUB_OUTPUT
+          fi
+
   deploy:
+    needs: prepare
     runs-on: ubuntu-latest
     environment: dev
     strategy:
       matrix:
-        service: ${{ inputs.service == 'both' && fromJson('["crm", "web"]') || fromJson(format('["{0}"]', inputs.service)) }}
+        service: ${{ fromJson(needs.prepare.outputs.services) }}
     
     steps:
     - name: Checkout code
@@ -48,6 +78,7 @@ jobs:
     
     - name: Deploy ${{ matrix.service }} service
       run: |
+        echo "Deploying service: ${{ matrix.service }} to environment: ${{ env.ENVIRONMENT }}"
         ./deploy/build.sh ${{ matrix.service }} ${{ env.ENVIRONMENT }}
     
     - name: Verify deployment
