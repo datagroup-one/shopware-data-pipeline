@@ -33,14 +33,14 @@ jobs:
 
     
     - name: Deploy Glue ETL Scripts
-    run: |
-      if [ -d "pipelines/pos/glue_jobs" ] && [ "$(ls -A pipelines/pos/glue_jobs)" ]; then
-        echo "Uploading Glue ETL scripts..."
-        aws s3 cp src/glue_jobs/ s3://${{ env.RAW_BUCKET }}/scripts/ --recursive
-        
-        echo "Uploaded Glue scripts:"
-        aws s3 ls s3://${{ env.RAW_BUCKET }}/scripts/
-      else
-        echo "No Glue scripts found in pipelines/pos/glue_jobs"
-        exit 1
-      fi
+      run: |
+        if [ -d "pipelines/pos/glue_jobs" ] && [ "$(ls -A pipelines/pos/glue_jobs)" ]; then
+          echo "Uploading Glue ETL scripts..."
+          aws s3 cp src/glue_jobs/ s3://${{ env.RAW_BUCKET }}/scripts/ --recursive
+          
+          echo "Uploaded Glue scripts:"
+          aws s3 ls s3://${{ env.RAW_BUCKET }}/scripts/
+        else
+          echo "No Glue scripts found in pipelines/pos/glue_jobs"
+          exit 1
+        fi
