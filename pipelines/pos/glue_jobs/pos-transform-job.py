@@ -13,6 +13,10 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
 from pyspark.sql.window import Window
+from awsglue.dynamicframe import DynamicFrame
+from pyspark.sql.functions import col, from_unixtime
+from pyspark.sql.types import TimestampType
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,17 +30,17 @@ class TransactionETL:
         self.s3_client = boto3.client('s3')
         
         # Configuration
-        self.source_bucket = "your-source-bucket"
-        self.source_prefix = "raw-transactions/"
-        self.archive_bucket = "your-archive-bucket"
-        self.archive_prefix = "archived-transactions/"
+        self.source_bucket = "shopware.bucket"
+        self.source_prefix = "raw-data/pos/2025/07/17/"
+        self.archive_bucket = "shopware.bucket"
+        self.archive_prefix = "archive/"
         
-        self.redshift_connection = "redshift-connection-name"
+        self.redshift_connection = "redshift-connection"
         self.redshift_schema = "public"
-        self.redshift_table = "transactions_processed"
+        self.redshift_table = "processed_pos"
         
         # Data quality thresholds
-        self.max_null_percentage = 0.05  # 5% max nulls allowed
+        self.max_null_percentage = 100  # 5% max nulls allowed
         self.min_revenue_threshold = 0.01
         self.max_revenue_threshold = 10000.0
         
@@ -65,21 +69,20 @@ class TransactionETL:
         """Read and combine all source CSV files"""
         try:
             # Define schema for better performance and data quality
-            schema = StructType([
-                StructField("transaction_id", StringType(), False),
-                StructField("store_id", IntegerType(), False),
-                StructField("product_id", IntegerType(), False),
-                StructField("quantity", IntegerType(), False),
-                StructField("revenue", DecimalType(10, 2), False),
-                StructField("discount_applied", DecimalType(10, 2), True),
-                StructField("timestamp", DoubleType(), False)
-            ])
+            # schema = StructType([
+            #     StructField("transaction_id", StringType(), False),
+            #     StructField("store_id", IntegerType(), False),
+            #     StructField("product_id", IntegerType(), False),
+            #     StructField("quantity", IntegerType(), False),
+            #     StructField("revenue", DecimalType(10, 2), False),
+            #     StructField("discount_applied", DecimalType(10, 2), True),
+            #     StructField("timestamp", StringType(), False)
+            # ])
             
             # Read all files
             df = self.spark.read \
                 .option("header", "true") \
-                .option("inferSchema", "false") \
-                .schema(schema) \
+                .option("inferSchema", "true") \
                 .csv(file_paths)
             
             # Add metadata columns
@@ -136,10 +139,21 @@ class TransactionETL:
     def transform_data(self, df):
         """Apply comprehensive transformations for analytics readiness"""
         logger.info("Starting data transformations")
+        logger.info("Sample timestamp values:")
         
+        df.printSchema()
+        df.select("timestamp").show(5, truncate=False)
+        
+        # 0.convert revenue
+        # df = df.withColumn("revenue", 
+        #         when(col("revenue").isNull() | (col("revenue") == ""), None)
+        #         .otherwise(col("revenue").cast(DecimalType(10, 2))))
+     
         # 1. Convert timestamp to proper datetime and extract date components
         df = df.withColumn("transaction_datetime", 
                           from_unixtime(col("timestamp")).cast(TimestampType()))
+        logger.info("Sample timestamp conversions:")
+        df.select("timestamp", "transaction_datetime").show(5, truncate=False)
         
         df = df.withColumn("transaction_date", to_date(col("transaction_datetime"))) \
                .withColumn("transaction_year", year(col("transaction_datetime"))) \
@@ -241,22 +255,25 @@ class TransactionETL:
         logger.info("Writing data to Redshift")
         
         try:
-            # Write to Redshift using Glue's built-in connector
-            df.write \
-                .format("com.databricks.spark.redshift") \
-                .option("url", f"jdbc:redshift://{self.redshift_connection}") \
-                .option("dbtable", f"{self.redshift_schema}.{self.redshift_table}") \
-                .option("tempdir", "s3://your-temp-bucket/redshift-temp/") \
-                .option("aws_iam_role", "arn:aws:iam::account:role/RedshiftRole") \
-                .mode("append") \
-                .save()
-            
+            # Write to Redshift using Glue connection
+            self.glue_context.write_dynamic_frame.from_options(
+                frame=DynamicFrame.fromDF(df, self.glue_context, "redshift_frame"),
+                connection_type="redshift",
+                connection_options={
+                    "useConnectionProperties": "true",
+                    "connectionName": self.redshift_connection,
+                    "dbtable": f"{self.redshift_schema}.{self.redshift_table}",
+                    "redshiftTmpDir": "s3://shopware.bucket/redshift-temp/"
+                },
+                transformation_ctx="redshift_write"
+            )
+                    
             logger.info("Successfully wrote data to Redshift")
             
         except Exception as e:
             logger.error(f"Error writing to Redshift: {str(e)}")
             raise
-    
+        
     def archive_processed_files(self, processed_files):
         """Move processed files to archive bucket"""
         logger.info(f"Archiving {len(processed_files)} processed files")
