@@ -31,7 +31,6 @@ class TransactionETL:
         
         # Configuration
         self.source_bucket = "shopware.bucket"
-        # self.source_prefix = "raw-data/pos/2025/07/17/"
         self.source_prefix = f"raw-data/pos/{datetime.now().strftime('%Y/%m/%d')}/"
         self.archive_bucket = "shopware.bucket"
         self.archive_prefix = "archive/pos/"
