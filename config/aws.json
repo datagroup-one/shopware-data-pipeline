@@ -5,8 +5,8 @@
       "cluster": "data-pipeline-cluster-dev",
       "bucket": "shopware.bucket",
       "streams": {
-        "crm": "PUT-S3-SrBTP",
-        "web": "web_traffic_logs"
+        "crm": "crm_interactions_stream",
+        "web": "web_traffic_logs_stream"
       },
       "s3_prefixes": {
         "crm": "raw-data/crm-interaction-streams/landing-zone/",
