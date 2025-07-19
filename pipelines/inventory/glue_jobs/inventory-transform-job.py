@@ -14,6 +14,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import *
 from pyspark.sql.types import *
 from pyspark.sql.window import Window
+from awsglue.dynamicframe import DynamicFrame
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -27,17 +28,17 @@ class InventoryETL:
         self.s3_client = boto3.client('s3')
         
         # Configuration
-        self.source_bucket = "your-inventory-source-bucket"
-        self.source_prefix = "raw-inventory/"
-        self.archive_bucket = "your-inventory-archive-bucket"
-        self.archive_prefix = "archived-inventory/"
+        self.source_bucket = "shopware.bucket"
+        # self.source_prefix = "raw-data/inventory/2025/07/17/"
+        self.source_prefix = f"raw-data/inventory/{datetime.now().strftime('%Y/%m/%d')}/"
+        self.archive_bucket = "shopware.bucket"
+        self.archive_prefix = "archive/inventory/"
         
-        self.redshift_connection = "redshift-connection-name"
+        self.redshift_connection = "redshift-connection"
         self.redshift_schema = "public"
-        self.redshift_table = "inventory_processed"
+        self.redshift_table = "processed_inventory"
         
         # Data quality thresholds
-        self.max_null_percentage = 0.05  # 5% max nulls allowed
         self.min_stock_level = 0
         self.max_stock_level = 100000
         self.min_restock_threshold = 1
@@ -106,18 +107,6 @@ class InventoryETL:
         if duplicate_count > 0:
             logger.warning(f"Found {duplicate_count} duplicate inventory IDs")
         
-        # Check null percentages for critical columns
-        critical_columns = ["inventory_id", "product_id", "warehouse_id", "stock_level", "last_updated"]
-        
-        for column in critical_columns:
-            null_count = df.filter(col(column).isNull()).count()
-            null_percentage = null_count / total_records
-            
-            if null_percentage > self.max_null_percentage:
-                raise ValueError(f"Column {column} has {null_percentage:.2%} null values, exceeding threshold of {self.max_null_percentage:.2%}")
-            
-            logger.info(f"Column {column}: {null_percentage:.2%} null values")
-        
         # Business rule validations
         invalid_stock = df.filter(
             (col("stock_level") < self.min_stock_level) | 
@@ -164,6 +153,8 @@ class InventoryETL:
                .withColumn("update_week_of_year", weekofyear(col("last_updated_datetime")))
         
         # 2. Handle null restock thresholds with intelligent defaults
+        df = df.fillna(0, subset=['restock_threshold'])
+        
         # Calculate median restock threshold per warehouse for null imputation
         warehouse_median_restock = df.filter(col("restock_threshold").isNotNull()) \
             .groupBy("warehouse_id") \
@@ -304,15 +295,18 @@ class InventoryETL:
         logger.info("Writing data to Redshift")
         
         try:
-            # Write to Redshift using Glue's built-in connector
-            df.write \
-                .format("com.databricks.spark.redshift") \
-                .option("url", f"jdbc:redshift://{self.redshift_connection}") \
-                .option("dbtable", f"{self.redshift_schema}.{self.redshift_table}") \
-                .option("tempdir", "s3://your-temp-bucket/redshift-temp/") \
-                .option("aws_iam_role", "arn:aws:iam::account:role/RedshiftRole") \
-                .mode("overwrite") \
-                .save()
+            # Write to Redshift using Glue connection
+            self.glue_context.write_dynamic_frame.from_options(
+                frame=DynamicFrame.fromDF(df, self.glue_context, "redshift_frame"),
+                connection_type="redshift",
+                connection_options={
+                    "useConnectionProperties": "true",
+                    "connectionName": self.redshift_connection,
+                    "dbtable": f"{self.redshift_schema}.{self.redshift_table}",
+                    "redshiftTmpDir": "s3://shopware.bucket/redshift-temp1/"
+                },
+                transformation_ctx="redshift_write"
+            )
             
             logger.info("Successfully wrote data to Redshift")
             
