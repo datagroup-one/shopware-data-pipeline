@@ -50,7 +50,7 @@
         },
         {
           "name": "POLL_INTERVAL",
-          "value": "30"
+          "value": "3"
         },
         {
           "name": "AWS_DEFAULT_REGION",

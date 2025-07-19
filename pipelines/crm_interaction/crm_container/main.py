@@ -49,13 +49,13 @@ class CRMProducer:
     EXPECTED_FIELDS = {"customer_id", "interaction_type", "timestamp"}
     
     def __init__(self):
-        self.api_url = os.getenv('API_URL', 'http://3.248.199.26:8000/api/customer-interaction/')
-        self.stream_name = os.getenv('FIREHOSE_STREAM_NAME', 'PUT-S3-SrBTP')
-        self.s3_bucket = os.getenv('S3_BUCKET_NAME', 'shopware.bucket')
-        self.s3_prefix = os.getenv('S3_PREFIX', 'raw-data/crm-interaction-streams/landing-zone/')
-        self.poll_interval = int(os.getenv('POLL_INTERVAL', '30'))
-        self.region = os.getenv('AWS_DEFAULT_REGION', 'eu-west-1')
-        self.output_format = os.getenv('OUTPUT_FORMAT', 'parquet')
+        self.api_url = os.getenv('API_URL')
+        self.stream_name = os.getenv('FIREHOSE_STREAM_NAME')
+        self.s3_bucket = os.getenv('S3_BUCKET_NAME')
+        self.s3_prefix = os.getenv('S3_PREFIX')
+        self.poll_interval = int(os.getenv('POLL_INTERVAL', '3'))
+        self.region = os.getenv('AWS_DEFAULT_REGION')
+        self.output_format = os.getenv('OUTPUT_FORMAT')
         
         # S3 batching configuration for 500KB Parquet files
         self.s3_batch_buffer = []
@@ -402,7 +402,7 @@ class CRMProducer:
 
     def alert_no_data(self):
         """Alert when no CRM data has been received for extended period"""
-        logger.error("⚠️ ALERT: No CRM data received in the last 10 polling cycles!")
+        logger.error("ALERT: No CRM data received in the last 10 polling cycles!")
         # Optional: Add SNS notification, CloudWatch metric, or Slack webhook here
         
         # Example CloudWatch metric (optional)
@@ -448,13 +448,13 @@ class CRMProducer:
                     
                     # Log results
                     if s3_success and firehose_success:
-                        logger.info("✅ Successfully processed CRM data to both S3 Parquet batch and Firehose")
+                        logger.info("Successfully processed CRM data to both S3 Parquet batch and Firehose")
                     elif s3_success:
-                        logger.warning("⚠️ S3 Parquet batch succeeded, Firehose failed")
+                        logger.warning("S3 Parquet batch succeeded, Firehose failed")
                     elif firehose_success:
-                        logger.warning("⚠️ Firehose succeeded, S3 Parquet batch failed")
+                        logger.warning("Firehose succeeded, S3 Parquet batch failed")
                     else:
-                        logger.error("❌ Both S3 Parquet batch and Firehose failed")
+                        logger.error("Both S3 Parquet batch and Firehose failed")
                 else:
                     logger.warning("No valid CRM records to process after validation")
                     

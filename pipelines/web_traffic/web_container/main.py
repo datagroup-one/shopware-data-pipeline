@@ -4,7 +4,9 @@ import time
 import logging
 import requests
 import boto3
-import gzip
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from datetime import datetime
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -47,15 +49,17 @@ class WebProducer:
     EXPECTED_FIELDS = {"session_id", "page", "timestamp"}
     
     def __init__(self):
-        self.api_url = os.getenv('API_URL', 'http://3.248.199.26:8000/api/web-traffic/')
-        self.stream_name = os.getenv('FIREHOSE_STREAM_NAME', 'web_traffic_logs')
-        self.s3_bucket = os.getenv('S3_BUCKET_NAME', 'data-pipeline-dev-605134436600')
-        self.poll_interval = int(os.getenv('POLL_INTERVAL', '30'))
-        self.region = os.getenv('AWS_DEFAULT_REGION', 'eu-west-1')
+        self.api_url = os.getenv('API_URL')
+        self.stream_name = os.getenv('FIREHOSE_STREAM_NAME')
+        self.s3_bucket = os.getenv('S3_BUCKET_NAME')
+        self.s3_prefix = os.getenv('S3_PREFIX')
+        self.poll_interval = int(os.getenv('POLL_INTERVAL', '3'))
+        self.region = os.getenv('AWS_DEFAULT_REGION')
+        self.output_format = os.getenv('OUTPUT_FORMAT')
         
-        # S3 batching configuration
+        # S3 batching configuration for 500KB Parquet files
         self.s3_batch_buffer = []
-        self.batch_size = int(os.getenv('S3_BATCH_SIZE', '10'))
+        self.batch_size = int(os.getenv('S3_BATCH_SIZE', '250'))  # ~500KB Parquet files
         self.batch_timeout = int(os.getenv('S3_BATCH_TIMEOUT', '300'))  # 5 minutes
         self.last_s3_write = time.time()
         
@@ -77,8 +81,9 @@ class WebProducer:
             logger.error(f"Failed to initialize S3 client: {e}")
             raise
         
-        logger.info(f"Web Producer initialized - Stream: {self.stream_name}, S3 Bucket: {self.s3_bucket}, API: {self.api_url}")
+        logger.info(f"Web Producer initialized - Stream: {self.stream_name}, S3 Bucket: {self.s3_bucket}, S3 Prefix: {self.s3_prefix}")
         logger.info(f"S3 batching enabled: {self.batch_size} records or {self.batch_timeout}s timeout")
+        logger.info(f"Output format: {self.output_format}")
 
     def start_health_server(self):
         """Start health check server on port 8080"""
@@ -189,7 +194,7 @@ class WebProducer:
         try:
             current_date = datetime.utcnow().strftime('%Y-%m-%d')
             timestamp = int(time.time() * 1000)
-            dlq_key = f"dlq/web/{reason}/{current_date}/dlq_{timestamp}.json"
+            dlq_key = f"dlq/web/{reason}/{current_date}/dlq_{timestamp}.json.gz"
             
             # Prepare DLQ data with metadata
             dlq_data = {
@@ -202,19 +207,20 @@ class WebProducer:
             data_content = json.dumps(dlq_data, indent=2)
             
             # Compress DLQ data
+            import gzip
             compressed_buffer = BytesIO()
             with gzip.GzipFile(mode='w', fileobj=compressed_buffer) as gz:
                 gz.write(data_content.encode())
             
             self.s3.put_object(
                 Bucket=self.s3_bucket,
-                Key=dlq_key + '.gz',
+                Key=dlq_key,
                 Body=compressed_buffer.getvalue(),
                 ContentEncoding='gzip',
                 ContentType='application/json'
             )
             
-            logger.info(f"Sent {len(records)} records to DLQ: s3://{self.s3_bucket}/{dlq_key}.gz")
+            logger.info(f"Sent {len(records)} records to DLQ: s3://{self.s3_bucket}/{dlq_key}")
             return True
             
         except Exception as e:
@@ -243,36 +249,44 @@ class WebProducer:
             return False
 
     def flush_s3_batch(self) -> bool:
-        """Flush S3 batch buffer to S3"""
+        """Flush S3 batch buffer to Parquet format"""
         if not self.s3_batch_buffer:
             return True
             
         try:
-            # Create S3 key with date partitioning
-            current_date = datetime.utcnow().strftime('%Y-%m-%d')
+            # Create S3 key with new path structure and partitioning
+            current_date = datetime.utcnow()
             timestamp = int(time.time() * 1000)
-            s3_key = f"direct/web/{current_date}/batch_{timestamp}.json"
             
-            # Prepare batch data
-            data_content = '\n'.join([json.dumps(record) for record in self.s3_batch_buffer])
+            # New S3 key structure: raw-data/web-logs/landing-zone/year=2025/month=07/day=18/batch_timestamp.parquet
+            s3_key = f"{self.s3_prefix}year={current_date.year}/month={current_date.month:02d}/day={current_date.day:02d}/batch_{timestamp}.parquet"
             
-            # Compress data using GZIP
-            compressed_buffer = BytesIO()
-            with gzip.GzipFile(mode='w', fileobj=compressed_buffer) as gz:
-                gz.write(data_content.encode())
+            # Convert to DataFrame and then to Parquet
+            df = pd.DataFrame(self.s3_batch_buffer)
             
-            logger.info(f"Flushing S3 batch: {len(self.s3_batch_buffer)} records to s3://{self.s3_bucket}/{s3_key}.gz")
-            
-            # Upload compressed data to S3
-            self.s3.put_object(
-                Bucket=self.s3_bucket,
-                Key=s3_key + '.gz',
-                Body=compressed_buffer.getvalue(),
-                ContentEncoding='gzip',
-                ContentType='application/json'
+            # Create Parquet buffer
+            parquet_buffer = BytesIO()
+            df.to_parquet(
+                parquet_buffer,
+                compression='snappy',  # Optimal for query performance
+                index=False,
+                engine='pyarrow'
             )
             
-            logger.info(f"Successfully flushed {len(self.s3_batch_buffer)} records to S3 (compressed)")
+            # Get file size for logging
+            file_size_kb = len(parquet_buffer.getvalue()) / 1024
+            
+            logger.info(f"Flushing S3 batch: {len(self.s3_batch_buffer)} records to s3://{self.s3_bucket}/{s3_key} ({file_size_kb:.1f}KB)")
+            
+            # Upload Parquet to S3
+            self.s3.put_object(
+                Bucket=self.s3_bucket,
+                Key=s3_key,
+                Body=parquet_buffer.getvalue(),
+                ContentType='application/octet-stream'
+            )
+            
+            logger.info(f"Successfully flushed {len(self.s3_batch_buffer)} records to S3 as Parquet ({file_size_kb:.1f}KB)")
             
             # Clear batch buffer and update timestamp
             self.s3_batch_buffer.clear()
@@ -351,18 +365,18 @@ class WebProducer:
         return False
 
     def send_to_both_destinations(self, records: List[Dict]) -> Tuple[bool, bool]:
-        """Send data to both S3 (batched) and Firehose (immediate)"""
+        """Send data to both S3 (batched Parquet) and Firehose (immediate)"""
         # Firehose: Send immediately for real-time processing
         firehose_success = self.send_to_firehose_with_retry(records)
         
-        # S3: Add to batch buffer for cost optimization
+        # S3: Add to batch buffer for cost-optimized Parquet storage
         s3_success = self.add_to_s3_batch(records)
         
         return s3_success, firehose_success
 
     def alert_no_data(self):
         """Alert when no data has been received for extended period"""
-        logger.error("⚠️ ALERT: No data received in the last 10 polling cycles!")
+        logger.error("ALERT: No data received in the last 10 polling cycles!")
         # Optional: Add SNS notification, CloudWatch metric, or Slack webhook here
         
         # Example CloudWatch metric (optional)
@@ -408,13 +422,13 @@ class WebProducer:
                     
                     # Log results
                     if s3_success and firehose_success:
-                        logger.info("✅ Successfully processed data to both S3 batch and Firehose")
+                        logger.info("Successfully processed data to both S3 Parquet batch and Firehose")
                     elif s3_success:
-                        logger.warning("⚠️ S3 batch succeeded, Firehose failed")
+                        logger.warning("S3 Parquet batch succeeded, Firehose failed")
                     elif firehose_success:
-                        logger.warning("⚠️ Firehose succeeded, S3 batch failed")
+                        logger.warning("Firehose succeeded, S3 Parquet batch failed")
                     else:
-                        logger.error("❌ Both S3 batch and Firehose failed")
+                        logger.error("Both S3 Parquet batch and Firehose failed")
                 else:
                     logger.warning("No valid records to process after validation")
                     
@@ -444,11 +458,12 @@ class WebProducer:
     def run(self):
         """Main run loop with enhanced features"""
         logger.info("Starting Enhanced Web Producer with:")
-        logger.info("- Dual streaming (S3 batching + Firehose real-time)")
+        logger.info("- Dual streaming (S3 Parquet batching + Firehose real-time)")
         logger.info("- Retry logic with exponential backoff")
         logger.info("- Data validation and DLQ support")
         logger.info("- Smart polling with adaptive backoff")
-        logger.info("- GZIP compression for cost optimization")
+        logger.info("- Parquet format for cost optimization")
+        logger.info("- Target file size: ~500KB")
         logger.info("- NO DATA ENRICHMENT")
         
         try:
