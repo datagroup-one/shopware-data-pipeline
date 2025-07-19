@@ -29,7 +29,6 @@ class InventoryETL:
         
         # Configuration
         self.source_bucket = "shopware.bucket"
-        # self.source_prefix = "raw-data/inventory/2025/07/17/"
         self.source_prefix = f"raw-data/inventory/{datetime.now().strftime('%Y/%m/%d')}/"
         self.archive_bucket = "shopware.bucket"
         self.archive_prefix = "archive/inventory/"
