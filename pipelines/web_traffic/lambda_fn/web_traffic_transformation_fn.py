@@ -5,173 +5,156 @@ import os
 from datetime import datetime
 from urllib.parse import urlparse
 
-# -------------------------------------
-# Configure dynamic logging level
-# -------------------------------------
+# Configure logging level from environment variable (default: INFO)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger()
 logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
-# --------------------------
-# Lambda entrypoint function
-# --------------------------
+
 def lambda_handler(event, context):
     """
-    AWS Lambda entry point for transforming Web Traffic Log records from Firehose.
-
-    Processes each record:
-    - Decodes Base64
-    - Parses JSON
-    - Validates and transforms fields
-    - Returns enriched record to Firehose
-
-    Supports KPIs: Engagement Scores, Session Metrics, Loyalty Activity
+    AWS Lambda handler function.
+    Processes a list of records and returns transformed results.
     """
     results = []
 
     for record in event.get('records', []):
         results.append(process_record(record))
 
-    # Log summary
-    success = sum(1 for r in results if r['result'] == 'Ok')
-    failure = len(results) - success
-    logger.info(f"Processed: {success} success, {failure} failed")
+    logger.info(f"Processed: {sum(1 for r in results if r['result'] == 'Ok')} success, "
+                f"{sum(1 for r in results if r['result'] != 'Ok')} failed")
 
     return {'records': results}
 
 
-# Process individual record
-# -------------------------
 def process_record(record):
+    """
+    Parses and transforms a single record.
+    Returns a success or failure response.
+    """
     try:
-        raw_data = parse_base64_json(record['data'])           # Decode & parse JSON
-        transformed = transform_web_traffic_record(raw_data)   # Transform record
+        raw_data = parse_base64_json(record['data'])
+        transformed = transform_record(raw_data)
         return build_success_response(record['recordId'], transformed)
     except Exception as e:
-        logger.exception(f"Record {record['recordId']} failed. Raw data: {record.get('data')}")
+        logger.exception(f"Failed to process record {record['recordId']}")
         return build_failure_response(record['recordId'])
 
 
-# Decode Base64-encoded string to JSON object
-# --------------------------------------------
 def parse_base64_json(encoded_data):
+    """
+    Decodes base64-encoded JSON string into a Python dictionary.
+    """
     decoded = base64.b64decode(encoded_data).decode('utf-8')
     return json.loads(decoded)
 
 
-# Main transformation logic for Web Traffic Log record
-# ----------------------------------------------------
-def transform_web_traffic_record(data):
-    # Ensure required fields are present
+def transform_record(data):
+    """
+    Applies data validation, enrichment, and transformation to an input record.
+    """
+    # Check that required fields are present
     validate_required_fields(data, ['session_id', 'page', 'timestamp'])
 
-    # Construct the output record
+    # Add enriched timestamp fields
+    ts_fields = enrich_timestamp(data['timestamp'])
+
+    # Add page-level metadata
+    page_info = enrich_page_info(data['page'])
+
+    # Return combined enriched record
     return {
-        'session_id': normalize_string(data['session_id']),
+        'session_id': str(data['session_id']).strip().lower(),
         'user_id': parse_optional_int(data.get('user_id')),
-        'page': normalize_string(data['page']),
-        'device_type': normalize_optional_string(data.get('device_type')),
-        'browser': normalize_optional_string(data.get('browser')),
-        'event_type': normalize_optional_string(data.get('event_type')),
-        **derive_timestamp_fields(data['timestamp']),
-        **derive_page_fields(data['page']),
+        'page': str(data['page']).strip().lower(),
+        'device_type': optional_lower(data.get('device_type')),
+        'browser': optional_lower(data.get('browser')),
+        'event_type': optional_lower(data.get('event_type')),
+        **ts_fields,
+        **page_info,
         'processed_at': datetime.utcnow().isoformat(),
-        'is_authenticated': bool(data.get('user_id')),
-        'is_mobile': is_mobile_device(data.get('device_type')),
+        'is_authenticated': data.get('user_id') is not None,
+        'is_mobile': is_mobile(data.get('device_type')),
         'is_engagement_event': is_engagement_event(data.get('event_type'))
     }
 
 
-# Required field validator
-# -------------------------------------
-def validate_required_fields(data, required_fields):
-    for field in required_fields:
+def validate_required_fields(data, fields):
+    """
+    Ensures all required fields are present and not None.
+    """
+    for field in fields:
         if field not in data or data[field] is None:
             raise ValueError(f"Missing required field: {field}")
 
 
-# Parse optional integer fields (handles null user_id)
-# -------------------------------------
 def parse_optional_int(value):
+    """
+    Converts value to int if not None.
+    """
     if value is None:
         return None
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        raise ValueError(f"Invalid integer: {value}")
+    return int(value)
 
 
-# Normalize string fields (lowercase + trim)
-# -------------------------------------
-def normalize_string(value):
-    return str(value).strip().lower()
+def optional_lower(value):
+    """
+    Converts string to lowercase if not None.
+    """
+    return str(value).strip().lower() if value else None
 
 
-# Normalize optional string fields with fallback logging
-# -------------------------------------
-def normalize_optional_string(value):
-    if value is None:
-        return None
-    try:
-        return normalize_string(value)
-    except Exception:
-        logger.warning(f"Could not normalize value: {value}")
-        return None
-
-
-# Check if device is mobile for KPI analysis
-# -------------------------------------
-def is_mobile_device(device_type):
+def is_mobile(device_type):
+    """
+    Determines whether the device type is considered mobile.
+    """
     if not device_type:
         return False
-    mobile_types = ['mobile', 'tablet', 'android', 'ios', 'iphone', 'ipad']
-    return any(mobile in device_type.lower() for mobile in mobile_types)
+    return any(keyword in device_type.lower() for keyword in ['mobile', 'tablet', 'android', 'ios', 'iphone', 'ipad'])
 
 
-# Check if event type indicates engagement for scoring
-# -------------------------------------
 def is_engagement_event(event_type):
+    """
+    Determines whether the event type indicates user engagement.
+    """
     if not event_type:
         return False
-    engagement_events = ['click', 'scroll', 'form_submit', 'download', 'video_play', 'share']
-    return event_type.lower() in engagement_events
+    return event_type.lower() in ['click', 'scroll', 'form_submit', 'download', 'video_play', 'share']
 
 
-# Extract and enrich time-based fields
-# -------------------------------------
-def derive_timestamp_fields(timestamp):
-    try:
-        ts = float(timestamp)
-        dt = datetime.fromtimestamp(ts)
-        return {
-            'timestamp': dt.isoformat(),                # Full timestamp
-            'event_date': dt.date().isoformat(),        # YYYY-MM-DD
-            'event_hour': dt.hour,                      # 0-23
-            'event_day_of_week': dt.weekday(),          # 0=Monday
-            'year': dt.year,
-            'month': dt.month,
-            'day': dt.day,
-            'hour': dt.hour
-        }
-    except Exception:
-        raise ValueError("Invalid timestamp format")
+def enrich_timestamp(ts):
+    """
+    Parses timestamp and returns multiple time-based attributes.
+    """
+    dt = datetime.fromtimestamp(float(ts))
+    return {
+        'timestamp': dt.strftime('%Y-%m-%d %H:%M:%S'),
+        'timestamp_iso': dt.isoformat(),
+        'event_date': dt.date().isoformat(),
+        'event_hour': dt.hour,
+        'event_day_of_week': dt.weekday(),
+        'year': dt.year,
+        'month': dt.month,
+        'day': dt.day,
+        'hour': dt.hour
+    }
 
 
-# Extract page-related fields for analytics
-# -------------------------------------
-def derive_page_fields(page):
+def enrich_page_info(page):
+    """
+    Parses and classifies page URL/path.
+    Extracts category and metadata such as path depth and query presence.
+    """
     try:
         parsed = urlparse(page if page.startswith('http') else f'https://example.com{page}')
         path_parts = [p for p in parsed.path.split('/') if p]
-        page_category = determine_page_category(path_parts)
-
         return {
             'page_path': parsed.path,
-            'page_category': page_category,
+            'page_category': map_page_category(path_parts),
             'path_depth': len(path_parts),
             'has_query_params': bool(parsed.query)
         }
-    except Exception:
+    except:
         return {
             'page_path': page,
             'page_category': 'unknown',
@@ -180,54 +163,46 @@ def derive_page_fields(page):
         }
 
 
-# Categorize pages for analytics
-# -------------------------------------
-def determine_page_category(path_parts):
+def map_page_category(path_parts):
+    """
+    Maps the first segment of the URL path to a high-level category.
+    """
     if not path_parts:
         return 'home'
-
-    first_part = path_parts[0].lower()
-
-    category_map = {
-        'product': 'product',
-        'products': 'product',
-        'item': 'product',
-        'cart': 'commerce',
-        'checkout': 'commerce',
-        'order': 'commerce',
-        'account': 'account',
-        'profile': 'account',
-        'login': 'auth',
-        'register': 'auth',
-        'signup': 'auth',
-        'about': 'content',
-        'contact': 'content',
-        'support': 'support',
-        'help': 'support',
-        'blog': 'content',
-        'news': 'content',
-        'search': 'search',
-        'category': 'navigation',
-        'admin': 'admin',
-        'api': 'api'
-    }
-
-    return category_map.get(first_part, 'other')
+    first = path_parts[0].lower()
+    return {
+        'product': 'product', 'products': 'product', 'item': 'product',
+        'cart': 'commerce', 'checkout': 'commerce', 'order': 'commerce',
+        'account': 'account', 'profile': 'account',
+        'login': 'auth', 'register': 'auth', 'signup': 'auth',
+        'about': 'content', 'contact': 'content', 'support': 'support',
+        'help': 'support', 'blog': 'content', 'news': 'content',
+        'search': 'search', 'category': 'navigation',
+        'admin': 'admin', 'api': 'api'
+    }.get(first, 'other')
 
 
-# Build success Firehose record
-# -------------------------------------
 def build_success_response(record_id, transformed):
+    """
+    Builds a success response for a successfully processed record.
+    Includes partitioning metadata.
+    """
     return {
         'recordId': record_id,
         'result': 'Ok',
-        'data': base64.b64encode((json.dumps(transformed) + '\n').encode('utf-8')).decode('utf-8')
+        'data': base64.b64encode((json.dumps(transformed) + '\n').encode('utf-8')).decode('utf-8'),
+        'recordMetadata': {
+            'partitionKeys': {
+                'event_date': transformed['event_date']
+            }
+        }
     }
 
 
-# Build failure Firehose record
-# -------------------------------------
 def build_failure_response(record_id):
+    """
+    Builds a failure response for a record that could not be processed.
+    """
     return {
         'recordId': record_id,
         'result': 'ProcessingFailed'
