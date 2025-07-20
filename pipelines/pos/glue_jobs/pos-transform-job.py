@@ -205,11 +205,17 @@ class TransactionETL:
         
         # 7. Add data quality flags
         df = df.withColumn("is_valid_transaction",
-                          when((col("revenue") >= self.min_revenue_threshold) &
-                               (col("revenue") <= self.max_revenue_threshold) &
-                               (col("quantity") > 0) &
-                               (col("quantity") <= 1000), True)
-                          .otherwise(False))
+                      when((col("revenue").isNotNull()) &
+                           (col("quantity").isNotNull()) &
+                           (col("transaction_id").isNotNull()) &
+                           (col("store_id").isNotNull()) &
+                           (col("product_id").isNotNull()) &
+                           (col("transaction_datetime").isNotNull()) &
+                           (col("revenue") >= self.min_revenue_threshold) &
+                           (col("revenue") <= self.max_revenue_threshold) &
+                           (col("quantity") > 0) &
+                           (col("quantity") <= 1000), True)
+                      .otherwise(False))
         
         # 8. Create partition columns for efficient querying
         df = df.withColumn("year_month", 
