@@ -108,14 +108,19 @@ class TransactionETL:
         # Business rule validations
         invalid_revenue = df.filter(
             (col("revenue") < self.min_revenue_threshold) | 
-            (col("revenue") > self.max_revenue_threshold)
+            (col("revenue") > self.max_revenue_threshold) |
+            col("revenue").isNull()
         ).count()
         
         if invalid_revenue > 0:
             logger.warning(f"Found {invalid_revenue} records with invalid revenue values")
         
         # Check for invalid quantities
-        invalid_quantity = df.filter((col("quantity") <= 0) | (col("quantity") > 1000)).count()
+        invalid_quantity = df.filter(
+            (col("quantity") <= 0) | 
+            (col("quantity") > 1000) |
+            col("quantity").isNull()
+        ).count()
         if invalid_quantity > 0:
             logger.warning(f"Found {invalid_quantity} records with invalid quantities")
         
