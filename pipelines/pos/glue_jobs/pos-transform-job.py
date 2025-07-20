@@ -90,6 +90,16 @@ class TransactionETL:
         total_records = df.count()
         logger.info(f"Starting data quality validation for {total_records} records")
         
+        # NULL VALUE ANALYSIS 
+        critical_columns = ["transaction_id", "store_id", "product_id", "quantity", "revenue", "timestamp"]
+    
+        for column in critical_columns:
+            null_count = df.filter(col(column).isNull()).count()
+            if null_count > 0:
+                null_percentage = (null_count / total_records) * 100
+                logger.warning(f"Found {null_count} null values in {column} ({null_percentage:.2f}%)")
+    
+
         # Check for duplicates
         duplicate_count = df.groupBy("transaction_id").count().filter(col("count") > 1).count()
         if duplicate_count > 0:
