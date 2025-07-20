@@ -36,8 +36,4 @@ jobs:
           python -m py_compile pipelines/inventory/lambda_fn/inventory-validation-fn.py
 
 
-      # OPTIONAL: Add unit tests here if needed
-      # - name: Run Unit Tests
-      #   run: |
-      #     pytest tests/
 
