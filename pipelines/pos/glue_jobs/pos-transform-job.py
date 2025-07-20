@@ -40,7 +40,6 @@ class TransactionETL:
         self.redshift_table = "processed_pos"
         
         # Data quality thresholds
-        self.max_null_percentage = 100  # 5% max nulls allowed
         self.min_revenue_threshold = 0.01
         self.max_revenue_threshold = 10000.0
         
@@ -68,17 +67,6 @@ class TransactionETL:
     def read_source_data(self, file_paths):
         """Read and combine all source CSV files"""
         try:
-            # Define schema for better performance and data quality
-            # schema = StructType([
-            #     StructField("transaction_id", StringType(), False),
-            #     StructField("store_id", IntegerType(), False),
-            #     StructField("product_id", IntegerType(), False),
-            #     StructField("quantity", IntegerType(), False),
-            #     StructField("revenue", DecimalType(10, 2), False),
-            #     StructField("discount_applied", DecimalType(10, 2), True),
-            #     StructField("timestamp", StringType(), False)
-            # ])
-            
             # Read all files
             df = self.spark.read \
                 .option("header", "true") \
@@ -107,18 +95,6 @@ class TransactionETL:
         if duplicate_count > 0:
             logger.warning(f"Found {duplicate_count} duplicate transaction IDs")
         
-        # Check null percentages for critical columns
-        critical_columns = ["transaction_id", "store_id", "product_id", "quantity", "revenue", "timestamp"]
-        
-        for column in critical_columns:
-            null_count = df.filter(col(column).isNull()).count()
-            null_percentage = null_count / total_records
-            
-            if null_percentage > self.max_null_percentage:
-                raise ValueError(f"Column {column} has {null_percentage:.2%} null values, exceeding threshold of {self.max_null_percentage:.2%}")
-            
-            logger.info(f"Column {column}: {null_percentage:.2%} null values")
-        
         # Business rule validations
         invalid_revenue = df.filter(
             (col("revenue") < self.min_revenue_threshold) | 
@@ -143,11 +119,6 @@ class TransactionETL:
         
         df.printSchema()
         df.select("timestamp").show(5, truncate=False)
-        
-        # 0.convert revenue
-        # df = df.withColumn("revenue", 
-        #         when(col("revenue").isNull() | (col("revenue") == ""), None)
-        #         .otherwise(col("revenue").cast(DecimalType(10, 2))))
      
         # 1. Convert timestamp to proper datetime and extract date components
         df = df.withColumn("transaction_datetime", 

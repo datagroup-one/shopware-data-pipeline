@@ -1,9 +1,76 @@
 
+# Event Processor Lambda
+
+This AWS Lambda function processes event records (e.g., user activity logs) from a stream such as Kinesis Firehose. It decodes, transforms, and enriches each record before returning the processed output in base64 format.
+
+
+## Input Schema
+
+Each record must be base64-encoded JSON with the following **required fields**:
+
+```json
+{
+  "session_id": "string",
+  "page": "string (URL or path)",
+  "timestamp": "float or int (epoch seconds)",
+  "user_id": "int (optional)",
+  "device_type": "string (optional)",
+  "browser": "string (optional)",
+  "event_type": "string (optional)"
+}
+```
+
+---
+
+## Output Schema
+
+Each successful record returns:
+
+```json
+{
+  "recordId": "string",
+  "result": "Ok",
+  "data": "base64-encoded JSON string",
+  "recordMetadata": {
+    "partitionKeys": {
+      "event_date": "YYYY-MM-DD"
+    }
+  }
+}
+```
+
+Transformed record fields include:
+
+* Parsed timestamp (`timestamp`, `timestamp_iso`, `event_date`, `event_hour`, etc.)
+* Page metadata (`page_path`, `page_category`, `path_depth`, `has_query_params`)
+* Booleans: `is_authenticated`, `is_mobile`, `is_engagement_event`
+* Enriched `processed_at` timestamp
+
+On failure, a record returns:
+
+```json
+{
+  "recordId": "string",
+  "result": "ProcessingFailed"
+}
+```
+
+---
+
+## Key Features
+
+* Field validation with graceful error handling
+* Smart categorization of pages (e.g., `product`, `auth`, `support`)
+* Timestamp enrichment (hour, day, weekday, etc.)
+* Device and engagement-type inference
+* Partitioning by `event_date`
+
+---
 # Web Traffic KPI Pipeline
 
 This AWS Lambda pipeline transforms raw web traffic logs into a minimal schema tailored for **KPI computation**. It is invoked via Kinesis Firehose and emits records in Parquet format partitioned by time for efficient querying via Athena or Redshift Spectrum.
 
----
+
 
 ##  Supported KPIs
 
@@ -13,10 +80,6 @@ The transformation supports **three key metric families**:
 - Tracks how many events represent meaningful interactions (clicks, scrolls, etc.)
 
 ### 2. **Session Metrics**
-
-
-
-
 
 ##  Output Fields
 

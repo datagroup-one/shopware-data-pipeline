@@ -1,0 +1,83 @@
+{
+  "family": "web-task-dev",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::605134436600:role/ecs-execution-role-dev",
+  "taskRoleArn": "arn:aws:iam::605134436600:role/ecs-task-role-dev",
+  "containerDefinitions": [
+    {
+      "name": "web",
+      "image": "{image_uri}",
+      "cpu": 0,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "hostPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [
+        {
+          "name": "API_URL",
+          "value": "http://3.248.199.26:8000/api/web-traffic/"
+        },
+        {
+          "name": "FIREHOSE_STREAM_NAME",
+          "value": "web_traffic_logs_stream"
+        },
+        {
+          "name": "S3_BUCKET_NAME",
+          "value": "shopware.bucket"
+        },
+        {
+          "name": "S3_PREFIX",
+          "value": "raw-data/web-logs/landing-zone/"
+        },
+        {
+          "name": "S3_BATCH_SIZE",
+          "value": "250"
+        },
+        {
+          "name": "S3_BATCH_TIMEOUT",
+          "value": "300"
+        },
+        {
+          "name": "OUTPUT_FORMAT",
+          "value": "parquet"
+        },
+        {
+          "name": "POLL_INTERVAL",
+          "value": "3"
+        },
+        {
+          "name": "AWS_DEFAULT_REGION",
+          "value": "eu-west-1"
+        }
+      ],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/web-dev",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8080/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 180
+      },
+      "systemControls": []
+    }
+  ]
+}
