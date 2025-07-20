@@ -137,7 +137,9 @@ class TransactionETL:
      
         # 1. Convert timestamp to proper datetime and extract date components
         df = df.withColumn("transaction_datetime", 
-                          from_unixtime(col("timestamp")).cast(TimestampType()))
+                      when(col("timestamp").isNotNull(), 
+                           from_unixtime(col("timestamp")).cast(TimestampType()))
+                      .otherwise(current_timestamp()))
         logger.info("Sample timestamp conversions:")
         df.select("timestamp", "transaction_datetime").show(5, truncate=False)
         
@@ -168,7 +170,8 @@ class TransactionETL:
         
         # 4. Add transaction categorization
         df = df.withColumn("transaction_size_category",
-                          when(col("revenue") < 50, "Small")
+                           when(col("revenue").isNull(), "Small")  # Default for null
+                          .when(col("revenue") < 50, "Small")
                           .when(col("revenue") < 200, "Medium")
                           .when(col("revenue") < 500, "Large")
                           .otherwise("Extra Large"))
