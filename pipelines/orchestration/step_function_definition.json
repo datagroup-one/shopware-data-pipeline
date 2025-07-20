@@ -1,0 +1,224 @@
+{
+  "Comment": "Shopware Batch Orchestration for POS and Inventory Data with Unified KPI Computation",
+  "StartAt": "Initialize Execution",
+  "States": {
+    "Initialize Execution": {
+      "Type": "Pass",
+      "Parameters": {
+        "execution_id.$": "$$.Execution.Name",
+        "start_time.$": "$$.Execution.StartTime",
+        "file_path.$": "$.detail.object.key",
+        "file_type.$": "States.ArrayGetItem(States.StringSplit($.detail.object.key, '/'), 1)",
+        "pos_completed": false,
+        "inventory_completed": false
+      },
+      "ResultPath": "$.execution_context",
+      "Next": "Validate File Type"
+    },
+    "Validate File Type": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.execution_context.file_type",
+          "StringEquals": "pos",
+          "Next": "Process POS Data"
+        },
+        {
+          "Variable": "$.execution_context.file_type",
+          "StringEquals": "inventory",
+          "Next": "Process Inventory Data"
+        }
+      ],
+      "Default": "Handle Unsupported File Type"
+    },
+    "Process POS Data": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "pos-transform-job",
+        "Arguments": {
+          "--file_path.$": "$.execution_context.file_path",
+          "--execution_id.$": "$.execution_context.execution_id"
+        }
+      },
+      "ResultPath": "$.glue_result",
+      "Next": "Restore Execution Context After POS",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Glue.ConcurrentRunsExceededException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 5,
+          "BackoffRate": 1.5
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Send Failure Notification",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "Restore Execution Context After POS": {
+      "Type": "Pass",
+      "Parameters": {
+        "execution_context.$": "$.execution_context"
+      },
+      "ResultPath": "$",
+      "Next": "Wait Before KPI Computation"
+    },
+    "Process Inventory Data": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {
+        "JobName": "inventory-transform-job",
+        "Arguments": {
+          "--file_path.$": "$.execution_context.file_path",
+          "--execution_id.$": "$.execution_context.execution_id"
+        }
+      },
+      "ResultPath": "$.glue_result",
+      "Next": "Restore Execution Context After Inventory",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Glue.ConcurrentRunsExceededException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 5,
+          "BackoffRate": 1.5
+        },
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "Send Failure Notification",
+          "ResultPath": "$.error"
+        }
+      ]
+    },
+    "Restore Execution Context After Inventory": {
+      "Type": "Pass",
+      "Parameters": {
+        "execution_context.$": "$.execution_context"
+      },
+      "ResultPath": "$",
+      "Next": "Wait Before KPI Computation"
+    },
+    "Wait Before KPI Computation": {
+      "Type": "Wait",
+      "Seconds": 20,
+      "Next": "Compute KPIs"
+    },
+    "Compute KPIs": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:eu-west-1:605134436600:function:pos-inventory-kpis",
+      "Parameters": {
+        "execution_id.$": "$.execution_context.execution_id",
+        "file_path.$": "$.execution_context.file_path",
+        "file_type.$": "$.execution_context.file_type"
+      },
+      "ResultPath": "$.kpi_result",
+      "Next": "Send Success Notification"
+    },
+    "Send Success Notification": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:eu-west-1:605134436600:shopware-batch-pipeline-notifications",
+        "Message.$": "States.Format('Batch ETL and KPI computation for {} completed successfully. Execution ID: {}', $.execution_context.file_type, $.execution_context.execution_id)",
+        "Subject": "Shopware Batch KPI Computation Success",
+        "MessageAttributes": {
+          "execution_id": {
+            "DataType": "String",
+            "StringValue.$": "$.execution_context.execution_id"
+          },
+          "file_type": {
+            "DataType": "String",
+            "StringValue.$": "$.execution_context.file_type"
+          },
+          "status": {
+            "DataType": "String",
+            "StringValue": "success"
+          }
+        }
+      },
+      "End": true
+    },
+    "Send Failure Notification": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:eu-west-1:605134436600:shopware-batch-pipeline-notifications",
+        "Message.$": "States.Format('Batch ETL and KPI computation for {} FAILED. Execution ID: {}. Please investigate the issue.', $.execution_context.file_type, $.execution_context.execution_id)",
+        "Subject": "Shopware Batch KPI Computation Failure",
+        "MessageAttributes": {
+          "execution_id": {
+            "DataType": "String",
+            "StringValue.$": "$.execution_context.execution_id"
+          },
+          "file_type": {
+            "DataType": "String",
+            "StringValue.$": "$.execution_context.file_type"
+          },
+          "status": {
+            "DataType": "String",
+            "StringValue": "failure"
+          }
+        }
+      },
+      "End": true
+    },
+    "Handle Unsupported File Type": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "arn:aws:sns:eu-west-1:605134436600:shopware-batch-pipeline-notifications",
+        "Message.$": "States.Format('Unsupported file type detected: {}. File path: {}', $.execution_context.file_type, $.execution_context.file_path)",
+        "Subject": "Shopware Batch Pipeline - Unsupported File Type",
+        "MessageAttributes": {
+          "file_type": {
+            "DataType": "String",
+            "StringValue.$": "$.execution_context.file_type"
+          },
+          "file_path": {
+            "DataType": "String",
+            "StringValue.$": "$.execution_context.file_path"
+          },
+          "status": {
+            "DataType": "String",
+            "StringValue": "unsupported_file_type"
+          }
+        }
+      },
+      "Next": "Unsupported File Type Fail"
+    },
+    "Unsupported File Type Fail": {
+      "Type": "Fail",
+      "Error": "UnsupportedFileType",
+      "Cause": "The provided file type is not supported. Only 'pos' and 'inventory' file types are allowed."
+    }
+  }
+}
