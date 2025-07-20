@@ -34,6 +34,3 @@ jobs:
           set -e
           python -m py_compile pipelines/pos/lambda_fn/pos-validation-fn.py
           python -m py_compile pipelines/inventory/lambda_fn/inventory-validation-fn.py
-
-
-
