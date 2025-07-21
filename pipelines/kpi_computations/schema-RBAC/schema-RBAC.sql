@@ -1,0 +1,11 @@
+-- SALES Analysts
+CREATE GROUP sales_analysts;
+GRANT USAGE ON SCHEMA sales_kpis TO GROUP sales_analysts;
+GRANT SELECT ON ALL TABLES IN SCHEMA sales_kpis TO GROUP sales_analysts;
+ALTER DEFAULT PRIVILEGES IN SCHEMA sales_kpis GRANT SELECT ON TABLES TO GROUP sales_analysts;
+
+-- OPERATIONS Analysts
+CREATE GROUP ops_analysts;
+GRANT USAGE ON SCHEMA ops_kpis TO GROUP ops_analysts;
+GRANT SELECT ON ALL TABLES IN SCHEMA ops_kpis TO GROUP ops_analysts;
+ALTER DEFAULT PRIVILEGES IN SCHEMA ops_kpis GRANT SELECT ON TABLES TO GROUP ops_analysts;
