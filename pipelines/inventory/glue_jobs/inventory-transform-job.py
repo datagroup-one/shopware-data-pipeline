@@ -119,7 +119,8 @@ class InventoryETL:
         # Business rule validations
         invalid_stock = df.filter(
             (col("stock_level") < self.min_stock_level) | 
-            (col("stock_level") > self.max_stock_level)
+            (col("stock_level") > self.max_stock_level) |
+            col("stock_level").isNull()
         ).count()
         
         if invalid_stock > 0:
