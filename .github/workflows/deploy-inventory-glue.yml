@@ -6,6 +6,7 @@ on:
       - 'pipelines/inventory/glue_jobs/*'
     branches:
       - feature/inventory_transformation
+      - feature/inventory1_transformation
 
 jobs:
   deploy:
