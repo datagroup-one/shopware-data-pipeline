@@ -49,6 +49,11 @@ The platform implements a modern data lake architecture with multiple processing
 
 ![architectural diagram](assets/Group_1_Architecture.png)
 
+Descriptive diagram
+
+![architectural diagram](assets/Descriptive_Group_1_Architecture.drawio.png)
+
+
 ### Data Flow Architecture
 
 **Batch Processing Flow:**
