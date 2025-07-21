@@ -1,33 +1,35 @@
 import json
 import base64
 import logging
+import os
 from datetime import datetime
 
-# Configure basic logging
+# -------------------------------------
+# Configure dynamic logging level
+# -------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
 
-# --------------------------
+
+# -------------------------------------
 # Lambda entrypoint function
-# --------------------------
+# -------------------------------------
 def lambda_handler(event, context):
     """
-    AWS Lambda entry point for transforming CRM interaction records from Firehose.
+    Entry point for the AWS Lambda function.
 
-    Processes each record:
-    - Decodes Base64
-    - Parses JSON
-    - Validates and transforms fields
-    - Returns enriched record to Firehose
-
-    Supports KPIs: Feedback Scores, Interaction Volume, Resolution Time, Loyalty Activity
+    This function processes each record received from Kinesis Firehose:
+    - Decodes base64-encoded JSON
+    - Transforms and enriches data
+    - Returns the result for each record (success/failure)
     """
     results = []
 
     for record in event.get('records', []):
         results.append(process_record(record))
 
-    # Log summary
+    # Log a summary of processing results
     success = sum(1 for r in results if r['result'] == 'Ok')
     failure = len(results) - success
     logger.info(f"Processed: {success} success, {failure} failed")
@@ -35,47 +37,51 @@ def lambda_handler(event, context):
     return {'records': results}
 
 
-# Process individual record
-# -------------------------
+# -------------------------------------
+# Process an individual Firehose record
+# -------------------------------------
 def process_record(record):
     try:
-        raw_data = parse_base64_json(record['data'])           # Decode & parse JSON
-        transformed = transform_crm_record(raw_data)           # Transform record
+        raw_data = parse_base64_json(record['data'])           # Decode base64 and parse JSON
+        transformed = transform_crm_record(raw_data)           # Apply transformation
         return build_success_response(record['recordId'], transformed)
     except Exception as e:
-        logger.error(f"Record {record['recordId']} failed: {e}")
-        return build_failure_response(record['recordId'])
+        logger.exception(f"Record {record.get('recordId')} failed. Error: {e}")
+        return build_failure_response(record.get('recordId'))
 
 
-# Decode Base64-encoded string to JSON object
-# --------------------------------------------
+# -------------------------------------
+# Decode base64-encoded string and parse as JSON
+# -------------------------------------
 def parse_base64_json(encoded_data):
     decoded = base64.b64decode(encoded_data).decode('utf-8')
     return json.loads(decoded)
 
 
-# Main transformation logic for CRM interaction record
-# ----------------------------------------------------
+# -------------------------------------
+# Transform raw CRM interaction record
+# -------------------------------------
 def transform_crm_record(data):
-    # Ensure required fields are present
+    # Validate required fields
     validate_required_fields(data, ['customer_id', 'interaction_type', 'timestamp'])
 
-    # Construct the output record
+    # Return enriched and normalized record
     return {
-        'customer_id': parse_int(data['customer_id']),                         # Normalize customer ID
-        'interaction_type': normalize_string(data['interaction_type']),        # Lowercase interaction type
-        'channel': normalize_optional_string(data.get('channel')),             # Optional communication channel
-        'rating': validate_rating(data.get('rating')),                         # Validate rating (1–5)
-        'message_excerpt': truncate_string(data.get('message_excerpt'), 1000), # Shorten long messages
-        **derive_timestamp_fields(data['timestamp']),                          # Add interaction_date, hour, weekday
-        'processed_at': datetime.utcnow().isoformat(),                         # Record processing time
-        'has_rating': is_valid_rating(data.get('rating')),                     # Bool flag for KPI filtering
-        'has_message': bool(data.get('message_excerpt')),                      # Bool flag for analytics
-        'has_channel': bool(data.get('channel'))                               # Bool flag for data completeness
+        'customer_id': parse_int(data['customer_id']),
+        'interaction_type': normalize_string(data['interaction_type']),
+        'channel': normalize_optional_string(data.get('channel')),
+        'rating': validate_rating(data.get('rating')),
+        'message_excerpt': truncate_string(data.get('message_excerpt'), 1000),
+        **derive_timestamp_fields(data['timestamp']),
+        'processed_at': current_utc_timestamp(),
+        'has_rating': is_valid_rating(data.get('rating')),
+        'has_message': bool(data.get('message_excerpt')),
+        'has_channel': bool(data.get('channel'))
     }
 
 
-# Required field validator
+# -------------------------------------
+# Ensure required fields are present
 # -------------------------------------
 def validate_required_fields(data, required_fields):
     for field in required_fields:
@@ -83,6 +89,7 @@ def validate_required_fields(data, required_fields):
             raise ValueError(f"Missing required field: {field}")
 
 
+# -------------------------------------
 # Parse and validate integer fields
 # -------------------------------------
 def parse_int(value):
@@ -92,53 +99,81 @@ def parse_int(value):
         raise ValueError(f"Invalid integer: {value}")
 
 
-# Normalize string fields (lowercase + trim)
+# -------------------------------------
+# Normalize string by stripping and lowercasing
 # -------------------------------------
 def normalize_string(value):
     return str(value).strip().lower()
 
 
-# Normalize optional string fields
+# -------------------------------------
+# Normalize optional strings safely
 # -------------------------------------
 def normalize_optional_string(value):
-    return normalize_string(value) if value else None
+    if value is None:
+        return None
+    try:
+        return normalize_string(value)
+    except Exception:
+        logger.warning(f"Could not normalize string: {value}")
+        return None
 
 
-# Truncate long strings
+# -------------------------------------
+# Truncate string fields to max length
 # -------------------------------------
 def truncate_string(value, max_length):
-    return str(value).strip()[:max_length] if value else None
+    if value is None:
+        return None
+    return str(value).strip()[:max_length]
 
 
-# Validate if rating is in 1–5 range
+# -------------------------------------
+# Check if rating is a valid 1–5 integer
 # -------------------------------------
 def is_valid_rating(rating):
     try:
-        return 1 <= int(rating) <= 5
+        rating_int = int(rating)
+        return 1 <= rating_int <= 5
     except Exception:
         return False
 
+
+# -------------------------------------
+# Return rating if valid, else None
+# -------------------------------------
 def validate_rating(rating):
     return int(rating) if is_valid_rating(rating) else None
 
 
-# Extract and enrich time-based fields
+# -------------------------------------
+# Convert timestamp to enriched fields
 # -------------------------------------
 def derive_timestamp_fields(timestamp):
     try:
         ts = float(timestamp)
-        dt = datetime.fromtimestamp(ts)
+        dt = datetime.utcfromtimestamp(ts)
+        iso_ts = dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'  # Trim to milliseconds
         return {
-            'timestamp': dt.isoformat(),                 # Full timestamp (ISO)
-            'interaction_date': dt.date().isoformat(),   # For grouping by day
-            'interaction_hour': dt.hour,                 # For time-of-day analysis
-            'interaction_day_of_week': dt.weekday()      # 0 = Monday, 6 = Sunday
+            'timestamp': iso_ts,
+            'interaction_date': dt.date().isoformat(),
+            'interaction_hour': dt.hour,
+            'interaction_day_of_week': dt.weekday()
         }
     except Exception:
         raise ValueError("Invalid timestamp format")
 
 
-# Build success Firehose record
+# -------------------------------------
+# Return current UTC timestamp (ISO 8601, milliseconds)
+# -------------------------------------
+def current_utc_timestamp():
+    now = datetime.utcnow()
+    return now.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+
+# -------------------------------------
+# Build successful response for Firehose
 # -------------------------------------
 def build_success_response(record_id, transformed):
     return {
@@ -147,7 +182,9 @@ def build_success_response(record_id, transformed):
         'data': base64.b64encode((json.dumps(transformed) + '\n').encode('utf-8')).decode('utf-8')
     }
 
-# Build failure Firehose record
+
+# -------------------------------------
+# Build failure response for Firehose
 # -------------------------------------
 def build_failure_response(record_id):
     return {

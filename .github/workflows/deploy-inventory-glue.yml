@@ -1,0 +1,47 @@
+name: Deploy Glue Job on Python File Change
+
+on:
+  push:
+    paths:
+      - 'pipelines/inventory/glue_jobs/*'
+    branches:
+      - feature/inventory_transformation
+      - feature/inventory1_transformation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Boto3
+      run: pip install boto3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1  
+
+    
+    - name: Deploy Glue ETL Scripts
+      run: |
+        if [ -d "pipelines/inventory/glue_jobs" ] && [ "$(ls -A pipelines/inventory/glue_jobs)" ]; then
+          echo "Uploading Glue ETL scripts..."
+          aws s3 cp pipelines/inventory/glue_jobs s3://${{ secrets.RAW_BUCKET }}/scripts/ --recursive
+          
+          echo "Uploaded Glue scripts:"
+          aws s3 ls s3://${{ secrets.RAW_BUCKET }}/scripts/
+        else
+          echo "No Glue scripts found in pipelines/inventory/glue_jobs"
+          exit 1
+        fi
