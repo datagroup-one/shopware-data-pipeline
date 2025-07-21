@@ -152,7 +152,9 @@ class InventoryETL:
         
         # 1. Convert timestamp to proper datetime and extract date components
         df = df.withColumn("last_updated_datetime", 
-                          from_unixtime(col("last_updated")).cast(TimestampType()))
+                      when(col("last_updated").isNotNull(), 
+                           from_unixtime(col("last_updated")).cast(TimestampType()))
+                      .otherwise(current_timestamp()))
         
         df = df.withColumn("last_updated_date", to_date(col("last_updated_datetime"))) \
                .withColumn("update_year", year(col("last_updated_datetime"))) \
@@ -294,7 +296,7 @@ class InventoryETL:
         
         df = df.select(*final_columns)
         
-        # 14. Cache for performance if doing multiple operations
+        # 14. Cache for performance in multiple operations
         df.cache()
         
         logger.info(f"Transformations completed. Final dataset has {df.count()} records")
