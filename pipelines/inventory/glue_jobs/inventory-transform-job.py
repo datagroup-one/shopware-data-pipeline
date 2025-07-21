@@ -101,6 +101,16 @@ class InventoryETL:
         total_records = df.count()
         logger.info(f"Starting data quality validation for {total_records} records")
         
+        # NULL VALUE ANALYSIS - Log
+        critical_columns = ["inventory_id", "warehouse_id", "product_id", "stock_level", "last_updated"]
+        
+        for column in critical_columns:
+            null_count = df.filter(col(column).isNull()).count()
+            if null_count > 0:
+                null_percentage = (null_count / total_records) * 100
+                logger.warning(f"Found {null_count} null values in {column} ({null_percentage:.2f}%)")
+    
+
         # Check for duplicates
         duplicate_count = df.groupBy("inventory_id").count().filter(col("count") > 1).count()
         if duplicate_count > 0:
@@ -109,7 +119,8 @@ class InventoryETL:
         # Business rule validations
         invalid_stock = df.filter(
             (col("stock_level") < self.min_stock_level) | 
-            (col("stock_level") > self.max_stock_level)
+            (col("stock_level") > self.max_stock_level) |
+            col("stock_level").isNull()
         ).count()
         
         if invalid_stock > 0:
@@ -141,7 +152,9 @@ class InventoryETL:
         
         # 1. Convert timestamp to proper datetime and extract date components
         df = df.withColumn("last_updated_datetime", 
-                          from_unixtime(col("last_updated")).cast(TimestampType()))
+                      when(col("last_updated").isNotNull(), 
+                           from_unixtime(col("last_updated")).cast(TimestampType()))
+                      .otherwise(current_timestamp()))
         
         df = df.withColumn("last_updated_date", to_date(col("last_updated_datetime"))) \
                .withColumn("update_year", year(col("last_updated_datetime"))) \
@@ -283,7 +296,7 @@ class InventoryETL:
         
         df = df.select(*final_columns)
         
-        # 14. Cache for performance if doing multiple operations
+        # 14. Cache for performance in multiple operations
         df.cache()
         
         logger.info(f"Transformations completed. Final dataset has {df.count()} records")

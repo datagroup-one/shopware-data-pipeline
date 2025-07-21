@@ -90,6 +90,16 @@ class TransactionETL:
         total_records = df.count()
         logger.info(f"Starting data quality validation for {total_records} records")
         
+        # NULL VALUE ANALYSIS 
+        critical_columns = ["transaction_id", "store_id", "product_id", "quantity", "revenue", "timestamp"]
+    
+        for column in critical_columns:
+            null_count = df.filter(col(column).isNull()).count()
+            if null_count > 0:
+                null_percentage = (null_count / total_records) * 100
+                logger.warning(f"Found {null_count} null values in {column} ({null_percentage:.2f}%)")
+    
+
         # Check for duplicates
         duplicate_count = df.groupBy("transaction_id").count().filter(col("count") > 1).count()
         if duplicate_count > 0:
@@ -98,14 +108,19 @@ class TransactionETL:
         # Business rule validations
         invalid_revenue = df.filter(
             (col("revenue") < self.min_revenue_threshold) | 
-            (col("revenue") > self.max_revenue_threshold)
+            (col("revenue") > self.max_revenue_threshold) |
+            col("revenue").isNull()
         ).count()
         
         if invalid_revenue > 0:
             logger.warning(f"Found {invalid_revenue} records with invalid revenue values")
         
         # Check for invalid quantities
-        invalid_quantity = df.filter((col("quantity") <= 0) | (col("quantity") > 1000)).count()
+        invalid_quantity = df.filter(
+            (col("quantity") <= 0) | 
+            (col("quantity") > 1000) |
+            col("quantity").isNull()
+        ).count()
         if invalid_quantity > 0:
             logger.warning(f"Found {invalid_quantity} records with invalid quantities")
         
@@ -122,7 +137,9 @@ class TransactionETL:
      
         # 1. Convert timestamp to proper datetime and extract date components
         df = df.withColumn("transaction_datetime", 
-                          from_unixtime(col("timestamp")).cast(TimestampType()))
+                      when(col("timestamp").isNotNull(), 
+                           from_unixtime(col("timestamp")).cast(TimestampType()))
+                      .otherwise(current_timestamp()))
         logger.info("Sample timestamp conversions:")
         df.select("timestamp", "transaction_datetime").show(5, truncate=False)
         
@@ -153,7 +170,8 @@ class TransactionETL:
         
         # 4. Add transaction categorization
         df = df.withColumn("transaction_size_category",
-                          when(col("revenue") < 50, "Small")
+                           when(col("revenue").isNull(), "Small")  # Default for null
+                          .when(col("revenue") < 50, "Small")
                           .when(col("revenue") < 200, "Medium")
                           .when(col("revenue") < 500, "Large")
                           .otherwise("Extra Large"))
@@ -187,11 +205,17 @@ class TransactionETL:
         
         # 7. Add data quality flags
         df = df.withColumn("is_valid_transaction",
-                          when((col("revenue") >= self.min_revenue_threshold) &
-                               (col("revenue") <= self.max_revenue_threshold) &
-                               (col("quantity") > 0) &
-                               (col("quantity") <= 1000), True)
-                          .otherwise(False))
+                      when((col("revenue").isNotNull()) &
+                           (col("quantity").isNotNull()) &
+                           (col("transaction_id").isNotNull()) &
+                           (col("store_id").isNotNull()) &
+                           (col("product_id").isNotNull()) &
+                           (col("transaction_datetime").isNotNull()) &
+                           (col("revenue") >= self.min_revenue_threshold) &
+                           (col("revenue") <= self.max_revenue_threshold) &
+                           (col("quantity") > 0) &
+                           (col("quantity") <= 1000), True)
+                      .otherwise(False))
         
         # 8. Create partition columns for efficient querying
         df = df.withColumn("year_month", 

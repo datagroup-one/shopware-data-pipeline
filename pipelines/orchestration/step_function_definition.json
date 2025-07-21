@@ -66,8 +66,8 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "Send Failure Notification",
-          "ResultPath": "$.error"
+          "ResultPath": "$.error",
+          "Next": "Send Failure Notification"
         }
       ]
     },
@@ -114,8 +114,8 @@
           "ErrorEquals": [
             "States.ALL"
           ],
-          "Next": "Send Failure Notification",
-          "ResultPath": "$.error"
+          "ResultPath": "$.error",
+          "Next": "Send Failure Notification"
         }
       ]
     },
@@ -141,31 +141,37 @@
         "file_type.$": "$.execution_context.file_type"
       },
       "ResultPath": "$.kpi_result",
-      "Next": "Send Success Notification"
-    },
-    "Send Success Notification": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sns:publish",
-      "Parameters": {
-        "TopicArn": "arn:aws:sns:eu-west-1:605134436600:shopware-batch-pipeline-notifications",
-        "Message.$": "States.Format('Batch ETL and KPI computation for {} completed successfully. Execution ID: {}', $.execution_context.file_type, $.execution_context.execution_id)",
-        "Subject": "Shopware Batch KPI Computation Success",
-        "MessageAttributes": {
-          "execution_id": {
-            "DataType": "String",
-            "StringValue.$": "$.execution_context.execution_id"
-          },
-          "file_type": {
-            "DataType": "String",
-            "StringValue.$": "$.execution_context.file_type"
-          },
-          "status": {
-            "DataType": "String",
-            "StringValue": "success"
-          }
+      "Next": "Log Success to S3",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Send Failure Notification"
         }
+      ]
+    },
+    "Log Success to S3": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:eu-west-1:605134436600:function:log_batch_success_to_s3",
+      "Parameters": {
+        "execution_id.$": "$.execution_context.execution_id",
+        "file_path.$": "$.execution_context.file_path",
+        "file_type.$": "$.execution_context.file_type",
+        "timestamp.$": "$.execution_context.start_time"
       },
-      "End": true
+      "ResultPath": "$.log_result",
+      "End": true,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Send Failure Notification"
+        }
+      ]
     },
     "Send Failure Notification": {
       "Type": "Task",
