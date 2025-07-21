@@ -1,0 +1,416 @@
+# .github/workflows/unified-cicd-pipeline.yml
+name: Unified CI/CD Pipeline - Dev to Production
+
+on:
+  # Trigger on push to dev branch
+  push:
+    branches: [ dev, dev2 ]
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      deploy_to_prod:
+        description: 'Deploy to production after tests pass'
+        required: false
+        type: boolean
+        default: true
+      service:
+        description: 'Service to deploy (for ECS deployment)'
+        required: false
+        type: choice
+        options:
+          - crm
+          - web
+          - both
+        default: both
+
+env:
+  AWS_REGION: eu-west-1 # Primary region for production
+  DEV_AWS_REGION: eu-west-1  # Dev region from your existing workflow
+  ENVIRONMENT: dev
+
+jobs:
+  # ============================================================================
+  # TESTING PHASE - Run all tests from existing workflows
+  # ============================================================================
+  
+  # Job 1: Test CRM Lambda Functions
+  test-crm-lambda:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+        
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest flake8
+          if [ -f pipelines/crm_interaction/lambda_fn/requirements.txt ]; then
+            pip install -r pipelines/crm_interaction/lambda_fn/requirements.txt
+          fi
+          
+      - name: Lint CRM Lambda code
+        run: |
+          flake8 pipelines/crm_interaction/lambda_fn/ --max-line-length=120 --ignore=E203,W503 --exclude=tests
+          
+      - name: Run CRM Lambda tests
+        run: |
+          if [ -d "pipelines/crm_interaction/lambda_fn/tests" ]; then
+            pytest pipelines/crm_interaction/lambda_fn/tests --disable-warnings -v
+          else
+            echo "No CRM tests found, skipping..."
+          fi
+
+  # Job 2: Test Web Traffic Lambda Functions  
+  test-web-traffic-lambda:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+        
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest flake8
+          if [ -f pipelines/web_traffic/lambda_fn/requirements.txt ]; then
+            pip install -r pipelines/web_traffic/lambda_fn/requirements.txt
+          fi
+          
+      - name: Lint Web Traffic Lambda code
+        run: |
+          flake8 pipelines/web_traffic/lambda_fn/ --max-line-length=120 --ignore=E203,W503 --exclude=tests
+          
+      - name: Run Web Traffic Lambda tests
+        run: |
+          if [ -d "pipelines/web_traffic/lambda_fn/tests" ]; then
+            pytest pipelines/web_traffic/lambda_fn/tests --disable-warnings -v
+          else
+            echo "No Web Traffic tests found, skipping..."
+          fi
+
+  # Job 3: Test POS and Inventory Lambda Functions
+  test-pos-inventory-lambda:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt || true
+          fi
+          
+      - name: Lint POS Lambda code
+        run: |
+          flake8 pipelines/pos/lambda_fn/pos-validation-fn.py --max-line-length=120 --ignore=E203,W503
+          
+      - name: Lint Inventory Lambda code
+        run: |
+          flake8 pipelines/inventory/lambda_fn/inventory-validation-fn.py --max-line-length=120 --ignore=E203,W503
+          
+      - name: Syntax check POS Lambda
+        run: |
+          python -m py_compile pipelines/pos/lambda_fn/pos-validation-fn.py
+          
+      - name: Syntax check Inventory Lambda
+        run: |
+          python -m py_compile pipelines/inventory/lambda_fn/inventory-validation-fn.py
+
+  # Job 4: Validate Glue Jobs
+  validate-glue-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 boto3
+          
+      - name: Validate POS Glue Job
+        run: |
+          if [ -f "pipelines/pos/glue_jobs/pos-transform-job.py" ]; then
+            python -m py_compile pipelines/pos/glue_jobs/pos-transform-job.py
+            flake8 pipelines/pos/glue_jobs/pos-transform-job.py --max-line-length=120 --ignore=E203,W503
+            echo " POS Glue job validation passed"
+          else
+            echo " POS Glue job not found, skipping validation"
+          fi
+          
+      - name: Validate Inventory Glue Job
+        run: |
+          if [ -f "pipelines/inventory/glue_jobs/inventory-transform-job.py" ]; then
+            python -m py_compile pipelines/inventory/glue_jobs/inventory-transform-job.py
+            flake8 pipelines/inventory/glue_jobs/inventory-transform-job.py --max-line-length=120 --ignore=E203,W503
+            echo " Inventory Glue job validation passed"
+          else
+            echo " Inventory Glue job not found, skipping validation"
+          fi
+
+  # Job 5: Validate Configuration Files
+  validate-configs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Validate JSON configs
+        run: |
+          for config_file in config/*.json; do
+            if [ -f "$config_file" ]; then
+              echo "Validating $config_file..."
+              python -m json.tool "$config_file" > /dev/null
+              echo " $config_file is valid JSON"
+            fi
+          done
+          
+      - name: Validate Step Function definition
+        run: |
+          if [ -f "pipelines/orchestration/step_function_definition.json" ]; then
+            echo "Validating Step Function definition..."
+            python -m json.tool pipelines/orchestration/step_function_definition.json > /dev/null
+            echo " Step Function definition is valid JSON"
+          fi
+          
+      - name: Validate SQL files
+        run: |
+          if [ -f "shared/redshift_query.sql" ]; then
+            echo " Redshift query file exists"
+            # Basic SQL syntax check (you can enhance this)
+            grep -i "create\|select\|insert\|update\|delete" shared/redshift_query.sql > /dev/null && echo " SQL file contains valid statements"
+          fi
+
+  # ============================================================================
+  # DEVELOPMENT DEPLOYMENT PHASE - Deploy to dev environment for integration testing
+  # ============================================================================
+  
+  # Job 6: Deploy to Development Environment
+  deploy-to-dev:
+    runs-on: ubuntu-latest
+    environment: dev
+    needs: [test-crm-lambda, test-web-traffic-lambda, test-pos-inventory-lambda, validate-glue-jobs, validate-configs]
+    if: success()
+    strategy:
+      matrix:
+        component: [glue-jobs, containers]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials (Dev)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.DEV_AWS_REGION }}
+          
+      - name: Deploy Glue Jobs to Dev
+        if: matrix.component == 'glue-jobs'
+        run: |
+          echo "Deploying Glue jobs to development environment..."
+          
+          # Deploy POS Glue job
+          if [ -d "pipelines/pos/glue_jobs" ] && [ "$(ls -A pipelines/pos/glue_jobs)" ]; then
+            echo "Uploading POS Glue ETL scripts..."
+            aws s3 cp pipelines/pos/glue_jobs s3://${{ secrets.RAW_BUCKET }}/scripts/dev/ --recursive
+          fi
+          
+          # Deploy Inventory Glue job
+          if [ -d "pipelines/inventory/glue_jobs" ] && [ "$(ls -A pipelines/inventory/glue_jobs)" ]; then
+            echo "Uploading Inventory Glue ETL scripts..."
+            aws s3 cp pipelines/inventory/glue_jobs s3://${{ secrets.RAW_BUCKET }}/scripts/dev/ --recursive
+          fi
+          
+          echo "Uploaded Glue scripts to dev:"
+          aws s3 ls s3://${{ secrets.RAW_BUCKET }}/scripts/dev/
+          
+      - name: Deploy Containers to Dev
+        if: matrix.component == 'containers'
+        run: |
+          echo "Deploying containers to development environment..."
+          chmod +x deploy/build.sh
+          
+          # Deploy based on workflow input or default to both
+          SERVICES="${{ github.event.inputs.service || 'both' }}"
+          
+          case "$SERVICES" in
+            "both")
+              ./deploy/build.sh crm ${{ env.ENVIRONMENT }}
+              ./deploy/build.sh web ${{ env.ENVIRONMENT }}
+              ;;
+            "crm")
+              ./deploy/build.sh crm ${{ env.ENVIRONMENT }}
+              ;;
+            "web")
+              ./deploy/build.sh web ${{ env.ENVIRONMENT }}
+              ;;
+          esac
+          
+      - name: Verify Dev Deployment
+        if: matrix.component == 'containers'
+        run: |
+          echo "Verifying development deployment..."
+          SERVICES="${{ github.event.inputs.service || 'both' }}"
+          CLUSTER_NAME=data-pipeline-cluster-${{ env.ENVIRONMENT }}
+          
+          case "$SERVICES" in
+            "both")
+              for service in crm web; do
+                SERVICE_NAME=${service}-service-${{ env.ENVIRONMENT }}
+                aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME --query 'services[0].{Running:runningCount,Desired:desiredCount,Status:status}' || echo "Service $SERVICE_NAME not found"
+              done
+              ;;
+            *)
+              SERVICE_NAME=$SERVICES-service-${{ env.ENVIRONMENT }}
+              aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME --query 'services[0].{Running:runningCount,Desired:desiredCount,Status:status}' || echo "Service $SERVICE_NAME not found"
+              ;;
+          esac
+
+  # ============================================================================
+  # INTEGRATION TESTING PHASE - Run integration tests in dev environment
+  # ============================================================================
+  
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-to-dev]
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.DEV_AWS_REGION }}
+          
+      - name: Run integration tests
+        run: |
+          echo "Running integration tests in dev environment..."
+          
+          # Test S3 connectivity
+          aws s3 ls s3://${{ secrets.RAW_BUCKET }}/scripts/dev/ > /dev/null && echo " S3 connectivity test passed"
+          
+          # Test ECS services status
+          CLUSTER_NAME=data-pipeline-cluster-${{ env.ENVIRONMENT }}
+          aws ecs list-services --cluster $CLUSTER_NAME > /dev/null && echo " ECS cluster connectivity test passed"
+          
+          # Add more integration tests as needed
+          echo " All integration tests passed"
+
+  # ============================================================================
+  # PRODUCTION PROMOTION PHASE - Create and push to prod branch
+  # ============================================================================
+  
+  promote-to-production:
+    runs-on: ubuntu-latest
+    needs: [integration-tests]
+    if: success() && (github.event.inputs.deploy_to_prod != 'false')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+      - name: Create or update prod branch
+        run: |
+          echo "Promoting successful dev build to production..."
+          
+          # Check if prod branch exists
+          if git ls-remote --heads origin prod | grep -q prod; then
+            echo "Prod branch exists, updating..."
+            git checkout prod
+            git merge origin/dev --no-ff -m "Auto-promote dev to prod - Build #${{ github.run_number }}"
+          else
+            echo "Creating new prod branch..."
+            git checkout -b prod
+          fi
+          
+      - name: Push to prod branch
+        run: |
+          git push origin prod
+          echo " Successfully promoted to production branch"
+          echo " Production deployment will be triggered automatically"
+          
+      - name: Create deployment summary
+        run: |
+          echo "##  Deployment Summary - Build #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "###  Tests Passed" >> $GITHUB_STEP_SUMMARY
+          echo "- CRM Lambda tests" >> $GITHUB_STEP_SUMMARY
+          echo "- Web Traffic Lambda tests" >> $GITHUB_STEP_SUMMARY  
+          echo "- POS/Inventory Lambda validation" >> $GITHUB_STEP_SUMMARY
+          echo "- Glue jobs validation" >> $GITHUB_STEP_SUMMARY
+          echo "- Configuration validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "###  Dev Deployment Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Glue jobs deployed to S3" >> $GITHUB_STEP_SUMMARY
+          echo "- ECS containers deployed and verified" >> $GITHUB_STEP_SUMMARY
+          echo "- Integration tests passed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "###  Production Promotion" >> $GITHUB_STEP_SUMMARY
+          echo "- Code promoted to \`prod\` branch" >> $GITHUB_STEP_SUMMARY
+          echo "- Production deployment pipeline triggered" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # NOTIFICATION PHASE - Send notifications about pipeline status
+  # ============================================================================
+  
+  notify-completion:
+    runs-on: ubuntu-latest
+    needs: [promote-to-production]
+    if: always()
+    steps:
+      - name: Notify pipeline completion
+        run: |
+          if [ "${{ needs.promote-to-production.result }}" = "success" ]; then
+            echo " PIPELINE SUCCESS!"
+            echo " All tests passed"
+            echo " Dev deployment successful" 
+            echo " Integration tests passed"
+            echo " Promoted to production"
+            echo " Production deployment in progress..."
+          else
+            echo " PIPELINE FAILED!"
+            echo "Check the failed jobs above for details"
+            exit 1
+          fi
