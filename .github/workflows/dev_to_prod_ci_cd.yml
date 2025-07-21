@@ -1,4 +1,3 @@
-# .github/workflows/unified-cicd-pipeline.yml
 name: Unified CI/CD Pipeline - Dev to Production
 
 on:
